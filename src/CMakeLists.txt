@@ -168,4 +168,5 @@ endif(WIN32)
 
 if(CLR_CMAKE_PLATFORM_UNIX)
     add_subdirectory(palrt)
+    add_subdirectory(profiler)
 endif(CLR_CMAKE_PLATFORM_UNIX)
