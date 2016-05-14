@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <pal_mstypes.h>
 #include <pal.h>
 #include <ntimage.h>

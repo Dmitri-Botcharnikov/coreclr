@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 2.8.12.2)
 
 project(CoreProfiler)
 
+add_definitions(-DPAL_STDCPP_COMPAT)
+
 include_directories(${COREPAL_SOURCE_DIR}/inc)
 include_directories(${ARCH_SOURCES_DIR})
 
@@ -23,10 +25,6 @@ add_library(coreprof
   SHARED
   ${PROFILER_SOURCES_COMMON}
   ${PROFILER_SOURCES_ASM}
-)
-
-target_link_libraries(coreprof
-  coreclr
 )
 
 install(TARGETS coreprof DESTINATION lib)
