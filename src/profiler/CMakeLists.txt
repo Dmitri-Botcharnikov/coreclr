@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 2.8.12.2)
 
 project(CoreProfiler)
 
+add_definitions(-DPAL_STDCPP_COMPAT)
+
+include_directories(${COREPAL_SOURCE_DIR}/inc)
+
 add_library(coreprof
   SHARED
   profiler.cpp
@@ -9,10 +13,6 @@ add_library(coreprof
   classfactory.cpp
   guids.cpp
   entrypoint.cpp
-)
-
-target_link_libraries(coreprof
-  coreclr
 )
 
 install(TARGETS coreprof DESTINATION lib)
