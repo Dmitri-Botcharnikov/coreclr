@@ -1,13 +1,55 @@
 #include "profiler.h"
 #include "log.h"
 
+static void __stdcall Enter3(
+    FunctionIDOrClientID functionIDOrClientIDo)
+{
+    LogProfilerActivity("Enter3\n");
+}
+
+static void __stdcall Leave3(
+    FunctionIDOrClientID functionIDOrClientIDo)
+{
+    LogProfilerActivity("Leave3\n");
+}
+
+static void __stdcall Tailcall3(
+    FunctionIDOrClientID functionIDOrClientID)
+{
+    LogProfilerActivity("Tailcall3\n");
+}
+
+// static void __stdcall Enter3WithInfo(
+//     FunctionIDOrClientID functionIDOrClientID,
+//     COR_PRF_ELT_INFO eltInfo)
+// {
+//     LogProfilerActivity("Enter3WithInfo\n");
+// }
+//
+// static void __stdcall Leave3WithInfo(
+//     FunctionIDOrClientID functionIDOrClientID,
+//     COR_PRF_ELT_INFO eltInfo)
+// {
+//     LogProfilerActivity("Leave3WithInfo\n");
+// }
+//
+// static void __stdcall Tailcall3WithInfo(
+//     FunctionIDOrClientID functionIDOrClientID,
+//     COR_PRF_ELT_INFO eltInfo)
+// {
+//     LogProfilerActivity("Tailcall3WithInfo\n");
+// }
+
 Profiler::Profiler()
     : m_referenceCount(1)
+    , m_pProfilerInfo3(NULL)
 {
 }
 
 Profiler::~Profiler()
 {
+    if (m_pProfilerInfo3 != NULL)
+        m_pProfilerInfo3->Release();
 }
 
 HRESULT STDMETHODCALLTYPE Profiler::QueryInterface(
@@ -50,15 +92,41 @@ HRESULT STDMETHODCALLTYPE Profiler::Initialize(
 {
     LogProfilerActivity("Initialize\n");
 
-    ICorProfilerInfo3 *info;
-    HRESULT hr = pICorProfilerInfoUnk->QueryInterface(IID_ICorProfilerInfo3, (void **) &info);
-    if (hr == S_OK && info != NULL)
-    {
-        info->SetEventMask(COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ASSEMBLY_LOADS | COR_PRF_MONITOR_CLASS_LOADS);
+    HRESULT hr = pICorProfilerInfoUnk->QueryInterface(
+        IID_ICorProfilerInfo3,
+        (void **) &m_pProfilerInfo3);
 
-        info->Release();
-        info = NULL;
+    if (FAILED(hr))
+        return hr;
+
+    if (m_pProfilerInfo3 == NULL)
+    {
+        return E_FAIL;
     }
+
+    m_pProfilerInfo3->SetEventMask(
+          COR_PRF_MONITOR_NONE
+        // | COR_PRF_MONITOR_JIT_COMPILATION
+        // | COR_PRF_MONITOR_ASSEMBLY_LOADS
+        // | COR_PRF_MONITOR_CLASS_LOADS
+        | COR_PRF_MONITOR_ENTERLEAVE
+        // | COR_PRF_ENABLE_FUNCTION_ARGS
+        // | COR_PRF_ENABLE_FUNCTION_RETVAL
+        // | COR_PRF_ENABLE_FRAME_INFO
+    );
+
+    hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3(
+        Enter3,
+        Leave3,
+        Tailcall3);
+
+    // hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3WithInfo(
+    //     Enter3WithInfo,
+    //     Leave3WithInfo,
+    //     Tailcall3WithInfo);
+
+    if (FAILED(hr))
+        return hr;
 
     return S_OK;
 }
