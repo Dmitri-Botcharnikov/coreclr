@@ -296,4 +296,5 @@ public:
 
 private:
     LONG m_referenceCount;
+    ICorProfilerInfo3 *m_pProfilerInfo3;
 };
