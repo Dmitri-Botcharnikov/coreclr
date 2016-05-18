@@ -1,22 +1,23 @@
 #include "profiler.h"
 #include "log.h"
 
-static void __stdcall Enter3(
-    FunctionIDOrClientID functionIDOrClientIDo)
+EXTERN_C void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
+
+EXTERN_C void __stdcall EnterStub()
 {
-    LogProfilerActivity("Enter3\n");
+    LogProfilerActivity("EnterStub\n");
 }
 
-static void __stdcall Leave3(
-    FunctionIDOrClientID functionIDOrClientIDo)
+EXTERN_C void __stdcall LeaveStub()
 {
-    LogProfilerActivity("Leave3\n");
+    LogProfilerActivity("LeaveStub\n");
 }
 
-static void __stdcall Tailcall3(
-    FunctionIDOrClientID functionIDOrClientID)
+EXTERN_C void __stdcall TailcallStub()
 {
-    LogProfilerActivity("Tailcall3\n");
+    LogProfilerActivity("TailcallStub\n");
 }
 
 // static void __stdcall Enter3WithInfo(
@@ -116,9 +117,9 @@ HRESULT STDMETHODCALLTYPE Profiler::Initialize(
     );
 
     hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3(
-        Enter3,
-        Leave3,
-        Tailcall3);
+        EnterNaked3,
+        LeaveNaked3,
+        TailcallNaked3);
 
     // hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3WithInfo(
     //     Enter3WithInfo,
