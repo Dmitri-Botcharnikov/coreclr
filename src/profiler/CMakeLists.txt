@@ -19,7 +19,7 @@ if(CLR_CMAKE_TARGET_ARCH_AMD64)
   )
 endif()
 
-add_library_clr(coreprof
+add_library(coreprof
   SHARED
   ${PROFILER_SOURCES_COMMON}
   ${PROFILER_SOURCES_ASM}
