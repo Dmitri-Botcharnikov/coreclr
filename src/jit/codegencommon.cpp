@@ -3094,7 +3094,7 @@ void                CodeGen::genGenerateCode(void * * codePtr,
         genCreateAndStoreGCInfo(codeSize, prologSize, epilogSize DEBUGARG(codePtr));
 
 #ifdef  DEBUG
-    FILE* dmpf = stdout;
+    FILE* dmpf = jitstdout;
 
     compiler->opts.dmpHex = false;
     if  (!strcmp(compiler->info.compMethodName, "<name of method you want the hex dump for"))
@@ -3133,7 +3133,7 @@ void                CodeGen::genGenerateCode(void * * codePtr,
         fflush(dmpf);
     }
 
-    if (dmpf != stdout)
+    if (dmpf != jitstdout)
     {
         fclose(dmpf);
     }
@@ -3931,9 +3931,20 @@ void            CodeGen::genFnPrologCalleeRegArgs(regNumber xtraReg,
                 // RyuJit backend is making another implicit assumption that Vector3 type args when passed in
                 // registers or on stack, the upper most 4-bytes will be zero.  
                 //
-                // TODO-64bit: assumptions 1 and 2 hold within RyuJIT generated code. It is not clear whether
-                // these assumptions hold when a Vector3 type arg is passed by native code. Example: PInvoke
-                // returning Vector3 type value or RPInvoke passing Vector3 type args.
+                // For P/Invoke return and Reverse P/Invoke argument passing, native compiler doesn't guarantee
+                // that upper 4-bytes of a Vector3 type struct is zero initialized and hence assumption 2 is 
+                // invalid.
+                //
+                // RyuJIT x64 Windows: arguments are treated as passed by ref and hence read/written just 12
+                // bytes. In case of Vector3 returns, Caller allocates a zero initialized Vector3 local and
+                // passes it retBuf arg and Callee method writes only 12 bytes to retBuf. For this reason,
+                // there is no need to clear upper 4-bytes of Vector3 type args.
+                //
+                // RyuJIT x64 Unix: arguments are treated as passed by value and read/writen as if TYP_SIMD16.
+                // Vector3 return values are returned two return registers and Caller assembles them into a 
+                // single xmm reg. Hence RyuJIT explicitly generates code to clears upper 4-bytes of Vector3 
+                // type args in prolog and Vector3 type return value of a call
+
                 if (varDsc->lvType == TYP_SIMD12)
                 {
                     regType = TYP_DOUBLE;
@@ -5068,10 +5079,8 @@ void CodeGen::genCheckUseBlockInit()
             continue;
 
 #if FEATURE_FIXED_OUT_ARGS
-#if INLINE_NDIRECT
         if (varNum == compiler->lvaPInvokeFrameRegSaveVar)
             continue;
-#endif
         if (varNum == compiler->lvaOutgoingArgSpaceVar)
             continue;
 #endif
@@ -5650,6 +5659,8 @@ void CodeGen::genAllocLclFrame(unsigned  frameSize,
     if  (frameSize == 0)
         return;
 
+    const size_t pageSize = compiler->eeGetPageSize();
+
 #ifdef _TARGET_ARM_
     assert(!compiler->info.compPublishStubParam || (REG_SECRET_STUB_PARAM != initReg));
 #endif // _TARGET_ARM_
@@ -5662,36 +5673,36 @@ void CodeGen::genAllocLclFrame(unsigned  frameSize,
     }
     else 
 #endif // _TARGET_XARCH_
-    if (frameSize < CORINFO_PAGE_SIZE)
+    if (frameSize < pageSize)
     {
 #ifndef _TARGET_ARM64_
         // Frame size is (0x0008..0x1000)
         inst_RV_IV(INS_sub, REG_SPBASE, frameSize, EA_PTRSIZE);
 #endif // !_TARGET_ARM64_
     }
-    else if (frameSize < VERY_LARGE_FRAME_SIZE)
+    else if (frameSize < compiler->getVeryLargeFrameSize())
     {
         // Frame size is (0x1000..0x3000)
 
 #if CPU_LOAD_STORE_ARCH
-        instGen_Set_Reg_To_Imm(EA_PTRSIZE, initReg, -CORINFO_PAGE_SIZE);
+        instGen_Set_Reg_To_Imm(EA_PTRSIZE, initReg, -(ssize_t)pageSize);
         getEmitter()->emitIns_R_R_R(INS_ldr, EA_4BYTE, initReg, REG_SPBASE, initReg);
         regTracker.rsTrackRegTrash(initReg);
         *pInitRegZeroed = false;  // The initReg does not contain zero
 #else
         getEmitter()->emitIns_AR_R(INS_TEST, EA_PTRSIZE,
-                                  REG_EAX, REG_SPBASE, -CORINFO_PAGE_SIZE);
+                                  REG_EAX, REG_SPBASE, -(int)pageSize);
 #endif
 
         if (frameSize >= 0x2000)
         {    
 #if CPU_LOAD_STORE_ARCH
-            instGen_Set_Reg_To_Imm(EA_PTRSIZE, initReg, -2 * CORINFO_PAGE_SIZE);
+            instGen_Set_Reg_To_Imm(EA_PTRSIZE, initReg, -2 * (ssize_t)pageSize);
             getEmitter()->emitIns_R_R_R(INS_ldr, EA_4BYTE, initReg, REG_SPBASE, initReg);
             regTracker.rsTrackRegTrash(initReg);
 #else
             getEmitter()->emitIns_AR_R(INS_TEST, EA_PTRSIZE,
-                                  REG_EAX, REG_SPBASE, -2 * CORINFO_PAGE_SIZE);
+                                  REG_EAX, REG_SPBASE, -2 * (int)pageSize);
 #endif
         }
 
@@ -5711,7 +5722,7 @@ void CodeGen::genAllocLclFrame(unsigned  frameSize,
     else
     {
         // Frame size >= 0x3000
-        assert(frameSize >= VERY_LARGE_FRAME_SIZE);
+        assert(frameSize >= compiler->getVeryLargeFrameSize());
 
         // Emit the following sequence to 'tickle' the pages.
         // Note it is important that stack pointer not change until this is
@@ -5774,9 +5785,9 @@ void CodeGen::genAllocLclFrame(unsigned  frameSize,
         getEmitter()->emitIns_R_R_R(INS_ldr, EA_4BYTE, rTemp, REG_SPBASE, rOffset);
         regTracker.rsTrackRegTrash(rTemp);
 #if defined(_TARGET_ARM_)
-        getEmitter()->emitIns_R_I(INS_sub, EA_PTRSIZE, rOffset, CORINFO_PAGE_SIZE);
+        getEmitter()->emitIns_R_I(INS_sub, EA_PTRSIZE, rOffset, pageSize);
 #elif defined(_TARGET_ARM64_)
-        getEmitter()->emitIns_R_R_I(INS_sub, EA_PTRSIZE, rOffset, rOffset, CORINFO_PAGE_SIZE);
+        getEmitter()->emitIns_R_R_I(INS_sub, EA_PTRSIZE, rOffset, rOffset, pageSize);
 #endif // _TARGET_ARM64_
         getEmitter()->emitIns_R_R(INS_cmp, EA_PTRSIZE, rOffset, rLimit);
         getEmitter()->emitIns_J(INS_bhi, NULL, -4);
@@ -5808,7 +5819,7 @@ void CodeGen::genAllocLclFrame(unsigned  frameSize,
         //      jge loop                    2
 
         getEmitter()->emitIns_R_ARR(INS_TEST, EA_PTRSIZE, initReg, REG_SPBASE, initReg, 0);
-        inst_RV_IV(INS_sub,  initReg, CORINFO_PAGE_SIZE, EA_PTRSIZE);
+        inst_RV_IV(INS_sub,  initReg, pageSize, EA_PTRSIZE);
         inst_RV_IV(INS_cmp,  initReg, -((ssize_t)frameSize), EA_PTRSIZE);
 
         int bytesForBackwardJump;
@@ -7890,7 +7901,7 @@ void                CodeGen::genFinalizeFrame()
 #if defined(_TARGET_ARMARCH_)
     // We need to determine if we will change SP larger than a specific amount to determine if we want to use a loop
     // to touch stack pages, that will require multiple registers. See genAllocLclFrame() for details.
-    if (compiler->compLclFrameSize >= VERY_LARGE_FRAME_SIZE)
+    if (compiler->compLclFrameSize >= compiler->getVeryLargeFrameSize())
     {
         regSet.rsSetRegsModified(VERY_LARGE_FRAME_SIZE_REG_MASK);
     }
@@ -7920,14 +7931,12 @@ void                CodeGen::genFinalizeFrame()
 #endif // !_TARGET_AMD64_
     }
 
-#if INLINE_NDIRECT
     /* If we have any pinvoke calls, we might potentially trash everything */
     if (compiler->info.compCallUnmanaged)
     {
         noway_assert(isFramePointerUsed());  // Setup of Pinvoke frame currently requires an EBP style frame
         regSet.rsSetRegsModified(RBM_INT_CALLEE_SAVED & ~RBM_FPBASE);
     }
-#endif // INLINE_NDIRECT
 
     /* Count how many callee-saved registers will actually be saved (pushed) */
 
@@ -8363,7 +8372,6 @@ void                CodeGen::genFnProlog()
     regMaskTP  excludeMask    = intRegState.rsCalleeRegArgMaskLiveIn;
     regMaskTP  tempMask;
 
-#if INLINE_NDIRECT
     // We should not use the special PINVOKE registers as the initReg
     // since they are trashed by the jithelper call to setup the PINVOKE frame
     if (compiler->info.compCallUnmanaged)
@@ -8386,7 +8394,6 @@ void                CodeGen::genFnProlog()
             }
         }
     }
-#endif // INLINE_NDIRECT
 
 #ifdef _TARGET_ARM_
     // If we have a variable sized frame (compLocallocUsed is true)
@@ -8398,7 +8405,7 @@ void                CodeGen::genFnProlog()
 #endif // _TARGET_ARM_
 
 #if defined(_TARGET_XARCH_)
-    if (compiler->compLclFrameSize >= VERY_LARGE_FRAME_SIZE)
+    if (compiler->compLclFrameSize >= compiler->getVeryLargeFrameSize())
     {
         // We currently must use REG_EAX on x86 here
         // because the loop's backwards branch depends upon the size of EAX encodings
@@ -8647,14 +8654,14 @@ void                CodeGen::genFnProlog()
 
     genReportGenericContextArg(initReg, &initRegZeroed);
 
-#if INLINE_NDIRECT && defined(LEGACY_BACKEND) // in RyuJIT backend this has already been expanded into trees
+#if defined(LEGACY_BACKEND) // in RyuJIT backend this has already been expanded into trees
     if (compiler->info.compCallUnmanaged)
     {
         getEmitter()->emitDisableRandomNops();
         initRegs = genPInvokeMethodProlog(initRegs);
         getEmitter()->emitEnableRandomNops();
     }
-#endif // !(INLINE_NDIRECT && defined(LEGACY_BACKEND))
+#endif // defined(LEGACY_BACKEND)
 
     // The local variable representing the security object must be on the stack frame
     // and must be 0 initialized.
@@ -8699,6 +8706,16 @@ void                CodeGen::genFnProlog()
         genPrologPadForReJit();
         getEmitter()->emitMarkPrologEnd();
     }
+    
+#if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) && defined(FEATURE_SIMD)
+    // The unused bits of Vector3 arguments must be cleared
+    // since native compiler doesn't initize the upper bits to zeros.
+    //
+    // TODO-Cleanup: This logic can be implemented in
+    // genFnPrologCalleeRegArgs() for argument registers and 
+    // genEnregisterIncomingStackArgs() for stack arguments.
+    genClearStackVec3ArgUpperBits();
+#endif //FEATURE_UNIX_AMD64_STRUCT_PASSING && FEATURE_SIMD
 
     /*-----------------------------------------------------------------------------
      * Take care of register arguments first
@@ -10348,7 +10365,7 @@ void CodeGen::genGenerateStackProbe()
     // of bytes, to set up a frame in the unmanaged code..
 
     static_assert_no_msg(
-        CORINFO_STACKPROBE_DEPTH + JIT_RESERVED_STACK < CORINFO_PAGE_SIZE);
+        CORINFO_STACKPROBE_DEPTH + JIT_RESERVED_STACK < compiler->eeGetPageSize());
 
     JITDUMP("Emitting stack probe:\n");
     getEmitter()->emitIns_AR_R(INS_TEST, EA_PTRSIZE,

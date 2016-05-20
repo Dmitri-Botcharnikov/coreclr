@@ -1284,31 +1284,42 @@ void CodeGen::genCodeForDivMod(GenTreeOp* treeNode)
             gcInfo.gcMarkRegSetNpt(RBM_RDX);
         }
 
-        // Perform the 'targetType' (64-bit or 32-bit) divide instruction
-        instruction ins;
-        if (oper == GT_UMOD || oper == GT_UDIV)
-            ins = INS_div;
-        else
-            ins = INS_idiv;
-            
-        emit->emitInsBinary(ins, size, treeNode, divisor);
-            
-        // Signed divide RDX:RAX by r/m64, with result
-        //    stored in RAX := Quotient, RDX := Remainder.
-        // Move the result to the desired register, if necessary
-        if (oper == GT_DIV || oper == GT_UDIV)
+        if (divisor->isContainedIntOrIImmed())
         {
-            if (targetReg != REG_RAX)
-            {
-                inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
-            }
+            GenTreeIntConCommon* divImm = divisor->AsIntConCommon();
+            assert(divImm->IsIntCnsFitsInI32());
+            ssize_t imm = divImm->IconValue();
+            assert(isPow2(abs(imm)));
+            genCodeForPow2Div(treeNode->AsOp());
         }
         else
         {
-            assert((oper == GT_MOD) || (oper == GT_UMOD));
-            if (targetReg != REG_RDX)
+            // Perform the 'targetType' (64-bit or 32-bit) divide instruction
+            instruction ins;
+            if (oper == GT_UMOD || oper == GT_UDIV)
+                ins = INS_div;
+            else
+                ins = INS_idiv;
+            
+            emit->emitInsBinary(ins, size, treeNode, divisor);
+            
+            // Signed divide RDX:RAX by r/m64, with result
+            //    stored in RAX := Quotient, RDX := Remainder.
+            // Move the result to the desired register, if necessary
+            if (oper == GT_DIV || oper == GT_UDIV)
             {
-                inst_RV_RV(INS_mov, targetReg, REG_RDX, targetType);
+                if (targetReg != REG_RAX)
+                {
+                    inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
+                }
+            }
+            else
+            {
+                assert((oper == GT_MOD) || (oper == GT_UMOD));
+                if (targetReg != REG_RDX)
+                {
+                    inst_RV_RV(INS_mov, targetReg, REG_RDX, targetType);
+                }
             }
         }
     }
@@ -1837,8 +1848,6 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
     {
         // All long enregistered nodes will have been decomposed into their
         // constituent lo and hi nodes.
-        regPairNo targetPair = treeNode->gtRegPair;
-        noway_assert(targetPair == REG_PAIR_NONE);
         targetReg = REG_NA;
     }
     else
@@ -2881,6 +2890,120 @@ CodeGen::genMultiRegCallStoreToLocal(GenTreePtr treeNode)
 #endif // !FEATURE_UNIX_AMD64_STRUCT_PASSING
 }
 
+// Generate code for division (or mod) by power of two
+// or negative powers of two.  (meaning -1 * a power of two, not 2^(-1))
+// Op2 must be a contained integer constant.
+void
+CodeGen::genCodeForPow2Div(GenTreeOp* tree)
+{
+    GenTree *dividend = tree->gtOp.gtOp1;
+    GenTree *divisor  = tree->gtOp.gtOp2;
+    genTreeOps  oper  = tree->OperGet();
+    emitAttr    size  = emitTypeSize(tree);
+    emitter    *emit  = getEmitter();
+    regNumber targetReg  = tree->gtRegNum;
+    var_types targetType = tree->TypeGet();
+
+    bool isSigned = oper == GT_MOD || oper == GT_DIV;
+
+    // precondition: extended dividend is in RDX:RAX
+    // which means it is either all zeros or all ones
+
+    noway_assert(divisor->isContained());
+    GenTreeIntConCommon* divImm = divisor->AsIntConCommon();
+    ssize_t imm = divImm->IconValue();
+    ssize_t abs_imm = abs(imm);
+    noway_assert(isPow2(abs_imm));
+    
+
+    if (isSigned)
+    {
+        if (imm == 1)
+        {
+            if (oper == GT_DIV)
+            {
+                if (targetReg != REG_RAX)
+                    inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
+            }
+            else
+            {
+                assert(oper == GT_MOD);
+                instGen_Set_Reg_To_Zero(size, targetReg);
+            }
+
+            return;
+        }
+
+        if (abs_imm == 2)
+        {
+            if (oper == GT_MOD)
+            {
+                emit->emitIns_R_I(INS_and, size, REG_RAX, 1); // result is 0 or 1
+                // xor with rdx will flip all bits if negative
+                emit->emitIns_R_R(INS_xor, size, REG_RAX, REG_RDX); // 111.11110 or 0
+            }
+            else
+            {
+                assert(oper == GT_DIV);
+                // add 1 if it's negative
+                emit->emitIns_R_R(INS_sub, size, REG_RAX, REG_RDX);
+            }
+        }
+        else
+        {
+            // add imm-1 if negative
+            emit->emitIns_R_I(INS_and, size, REG_RDX, abs_imm - 1);
+            emit->emitIns_R_R(INS_add, size, REG_RAX, REG_RDX);
+        }
+
+        if (oper == GT_DIV)
+        {
+            unsigned shiftAmount = genLog2(unsigned(abs_imm));
+            inst_RV_SH(INS_sar, size, REG_RAX, shiftAmount);
+
+            if (imm < 0)
+            {
+                emit->emitIns_R(INS_neg, size, REG_RAX);
+            }
+        }
+        else
+        {
+            assert(oper == GT_MOD);
+            if (abs_imm > 2)
+            {
+                emit->emitIns_R_I(INS_and, size, REG_RAX, abs_imm - 1);
+            }
+            // RDX contains 'imm-1' if negative
+            emit->emitIns_R_R(INS_sub, size, REG_RAX, REG_RDX);
+        }
+
+        if (targetReg != REG_RAX)
+        {
+            inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
+        }
+    }
+    else
+    {
+        assert (imm > 0);
+
+        if (targetReg != dividend->gtRegNum)
+        {
+            inst_RV_RV(INS_mov, targetReg, dividend->gtRegNum, targetType);
+        }
+
+        if (oper == GT_UDIV)
+        {
+            inst_RV_SH(INS_shr, size, targetReg, genLog2(unsigned(imm)));
+        }
+        else 
+        {
+            assert(oper == GT_UMOD);
+
+            emit->emitIns_R_I(INS_and, size, targetReg, imm -1);
+        }
+    }
+}
+
 
 /***********************************************************************************************
  *  Generate code for localloc
@@ -3010,7 +3133,7 @@ CodeGen::genLclHeap(GenTreePtr tree)
             
             goto ALLOC_DONE;
         }
-        else if (!compiler->info.compInitMem && (amount < CORINFO_PAGE_SIZE))  // must be < not <=
+        else if (!compiler->info.compInitMem && (amount < compiler->eeGetPageSize()))  // must be < not <=
         {               
             // Since the size is less than a page, simply adjust ESP.
             // ESP might already be in the guard page, so we must touch it BEFORE
@@ -3120,7 +3243,7 @@ CodeGen::genLclHeap(GenTreePtr tree)
         regNumber regTmp = genRegNumFromMask(tmpRegsMask);
 
         inst_RV_RV(INS_mov, regTmp, REG_SPBASE, TYP_I_IMPL);
-        inst_RV_IV(INS_sub, regTmp, CORINFO_PAGE_SIZE, EA_PTRSIZE);
+        inst_RV_IV(INS_sub, regTmp, compiler->eeGetPageSize(), EA_PTRSIZE);
         inst_RV_RV(INS_mov, REG_SPBASE, regTmp, TYP_I_IMPL);
 
         inst_RV_RV(INS_cmp, REG_SPBASE, regCnt, TYP_I_IMPL);
@@ -3682,6 +3805,61 @@ void CodeGen::genStructPutArgRepMovs(GenTreePutArgStk* putArgNode, unsigned base
     genConsumePutStructArgStk(putArgNode, REG_RDI, REG_RSI, REG_RCX, baseVarNum);
     instGen(INS_r_movsb);
 }
+
+//------------------------------------------------------------------------
+// If any Vector3 args are on stack and they are not pass-by-ref, the upper 32bits
+// must be cleared to zeroes. The native compiler doesn't clear the upper bits
+// and there is no way to know if the caller is native or not. So, the upper
+// 32 bits of Vector argument on stack are always cleared to zero.
+#ifdef FEATURE_SIMD
+void    CodeGen::genClearStackVec3ArgUpperBits()
+{
+#ifdef DEBUG
+    if (verbose)
+        printf("*************** In genClearStackVec3ArgUpperBits()\n");
+#endif
+
+    assert(compiler->compGeneratingProlog);
+
+    unsigned varNum = 0;
+
+    for (unsigned varNum = 0; varNum < compiler->info.compArgsCount; varNum++)
+    {
+        LclVarDsc* varDsc = &(compiler->lvaTable[varNum]);
+        assert(varDsc->lvIsParam);
+
+        // Does var has simd12 type?
+        if (varDsc->lvType != TYP_SIMD12)
+        {
+            continue;
+        }
+
+        if (!varDsc->lvIsRegArg)
+        {
+            // Clear the upper 32 bits by mov dword ptr [V_ARG_BASE+0xC], 0
+            getEmitter()->emitIns_S_I(
+                ins_Store(TYP_INT),
+                EA_4BYTE,
+                varNum,
+                genTypeSize(TYP_FLOAT) * 3,
+                0);
+
+        }
+        else 
+        {
+            // Assume that for x64 linux, an argument is fully in registers 
+            // or fully on stack.
+            regNumber argReg = varDsc->GetOtherArgReg();
+
+            // Clear the upper 32 bits by two shift instructions.
+            // argReg = argReg << 96
+            getEmitter()->emitIns_R_I(INS_pslldq, emitActualTypeSize(TYP_SIMD12), argReg, 12);
+            // argReg = argReg >> 96
+            getEmitter()->emitIns_R_I(INS_psrldq, emitActualTypeSize(TYP_SIMD12), argReg, 12);
+        }
+    }
+}
+#endif // FEATURE_SIMD
 #endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
 
 // Generate code for CpObj nodes wich copy structs that have interleaved
@@ -5950,6 +6128,21 @@ void CodeGen::genCallInstruction(GenTreePtr node)
                         inst_RV_RV(ins_Copy(regType), allocatedReg, returnReg, regType);
                     }
                 }
+
+#ifdef FEATURE_SIMD 
+                // A Vector3 return value is stored in xmm0 and xmm1. 
+                // RyuJIT assumes that the upper unused bits of xmm1 are cleared but
+                // the native compiler doesn't guarantee it.
+                if (returnType == TYP_SIMD12) 
+                {
+                    returnReg = retTypeDesc->GetABIReturnReg(1);
+                    // Clear the upper 32 bits by two shift instructions.
+                    // retReg = retReg << 96
+                    // retReg = retReg >> 96
+                    getEmitter()->emitIns_R_I(INS_pslldq, emitActualTypeSize(TYP_SIMD12), returnReg, 12);
+                    getEmitter()->emitIns_R_I(INS_psrldq, emitActualTypeSize(TYP_SIMD12), returnReg, 12);
+                }
+#endif // FEATURE_SIMD
             }
             else
             {                

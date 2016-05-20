@@ -74,7 +74,7 @@ if [ "$__DistroName" == "rhel" ]; then
 fi
 
 # Work around mac build issue 
-if [ "$OS"=="OSX" ]; then
+if [ "$OS" == "OSX" ]; then
   echo Raising file open limit - otherwise Mac build may fail
   echo ulimit -n 2048
   ulimit -n 2048

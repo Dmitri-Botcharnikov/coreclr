@@ -5538,6 +5538,10 @@
       <Member Name="IsInstanceOfInterface(System.RuntimeTypeHandle,System.Exception@)" /> <!-- EE -->
       <Member Name="GetImplType(System.RuntimeTypeHandle)" /> <!-- EE -->
     </Type>
+    <Type Name="System.Runtime.CompilerServices.ICastableHelpers"> 
+      <Member Name="IsInstanceOfInterface(System.Runtime.CompilerServices.ICastable,System.RuntimeType,System.Exception@)" /> <!-- EE -->
+      <Member Name="GetImplType(System.Runtime.CompilerServices.ICastable,System.RuntimeType)" /> <!-- EE -->
+    </Type>
     <Type Name="System.Runtime.CompilerServices.IsExplicitlyDereferenced"> <!-- for MC++ -->
     </Type>
     <Type Name="System.Runtime.CompilerServices.IsImplicitlyDereferenced">  <!-- for MC++ -->
@@ -5915,6 +5919,8 @@
       <Member Name="PrelinkAll(System.Type)" />
       <Member Name="PtrToStringAnsi(System.IntPtr)" />
       <Member Name="PtrToStringAnsi(System.IntPtr,System.Int32)" />
+      <Member Name="PtrToStringUTF8(System.IntPtr)" />
+      <Member Name="PtrToStringUTF8(System.IntPtr,System.Int32)" />
       <Member Name="PtrToStringUni(System.IntPtr)" />
       <Member Name="PtrToStringUni(System.IntPtr,System.Int32)" />
       <Member Name="PtrToStructure(System.IntPtr,System.Object)" />
@@ -5994,6 +6000,7 @@
       <Member Name="StringToCoTaskMemUni(System.String)" />
       <Member Name="StringToHGlobalAnsi(System.String)" />
       <Member Name="StringToHGlobalUni(System.String)" />
+      <Member Name="StringToCoTaskMemUTF8(System.String)" />
       <Member Name="StructureToPtr&lt;T&gt;(T,System.IntPtr,System.Boolean)" />
       <Member Name="UnsafeAddrOfPinnedArrayElement&lt;T&gt;(T[],System.Int32)" />
       <Member Name="WriteByte(System.Object,System.Int32,System.Byte)" />
@@ -6006,6 +6013,7 @@
       <Member Name="ZeroFreeCoTaskMemAnsi(System.IntPtr)" />
       <Member Name="ZeroFreeGlobalAllocAnsi(System.IntPtr)" />
       <Member Name="ZeroFreeGlobalAllocUnicode(System.IntPtr)" />
+      <Member Name="ZeroFreeCoTaskMemUTF8(System.IntPtr)" />
     </Type>
     <Type Name="System.Runtime.InteropServices.MarshalAsAttribute">
       <Member MemberType="Field" Name="ArraySubType" />
@@ -6124,6 +6132,7 @@
       <Member MemberType="Field" Name="LPStruct" />
       <Member MemberType="Field" Name="LPTStr" />
       <Member MemberType="Field" Name="LPWStr" />
+      <Member MemberType="Field" Name="LPUTF8Str" />
       <Member MemberType="Field" Name="R4" />
       <Member MemberType="Field" Name="R8" />
       <Member MemberType="Field" Name="SafeArray" />
@@ -10100,6 +10109,15 @@
       <Member Name="ConvertToManaged(System.IntPtr)" />
       <Member Name="ClearNative(System.IntPtr)" />
     </Type>
+     <Type Status="ImplRoot" Name="System.StubHelpers.UTF8Marshaler">
+      <Member Name="ConvertToNative(System.Int32,System.String,System.IntPtr)" />
+      <Member Name="ConvertToManaged(System.IntPtr)" />
+      <Member Name="ClearNative(System.IntPtr)" />
+    </Type>    
+      <Type Status="ImplRoot" Name="System.StubHelpers.UTF8BufferMarshaler">
+      <Member Name="ConvertToNative(System.Text.StringBuilder,System.IntPtr,System.Int32)" />
+      <Member Name="ConvertToManaged(System.Text.StringBuilder,System.IntPtr)" />      
+    </Type>    
     <Type Status="ApiFxInternal" Name="System.StubHelpers.EventArgsMarshaler" Condition="FEATURE_COMINTEROP">
       <Member Name="CreateNativeNCCEventArgsInstance(System.Int32,System.Object,System.Object,System.Int32,System.Int32)"/>
       <Member Name="CreateNativePCEventArgsInstance(System.String)" />
@@ -10375,6 +10393,8 @@
       <Member Status="ImplRoot" Name="GetDelegateContinuationsForDebugger" />
       <Member Status="ImplRoot" Name="GetActiveTaskFromId(System.Int32)" />
       <Member Status="ImplRoot" Name="GetActiveTasks" />
+      <Member Status="ImplRoot" Name="get_ParentForDebugger" />
+      <Member Status="ImplRoot" Name="get_StateFlagsForDebugger" />
     </Type>
     <Type Status="ImplRoot" Name="System.Threading.Tasks.SystemThreadingTasks_TaskDebugView">
       <Member Status="ImplRoot" Name="#ctor(System.Threading.Tasks.Task)" />

@@ -12,12 +12,12 @@
   
   <ItemGroup>
     <ArchitectureSpecificNativeFile Include="$(BinDir)clretwrc.dll"/>
-    <ArchitectureSpecificNativeFile Include="$(BinDir)clrjit.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)coreclr.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)dbgshim.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)mscordaccore.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)mscordbi.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)mscorlib.ni.dll"/>
+    <ArchitectureSpecificNativeFile Include="$(BinDir)System.Private.CoreLib.ni.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)mscorrc.debug.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)mscorrc.dll"/>
     <ArchitectureSpecificNativeFile Include="$(BinDir)sos.dll"/>
