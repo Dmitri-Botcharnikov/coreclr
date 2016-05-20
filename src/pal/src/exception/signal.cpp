@@ -94,6 +94,12 @@ struct sigaction g_previous_sigint;
 struct sigaction g_previous_sigquit;
 struct sigaction g_previous_sigterm;
 
+static bool registered_sigterm_handler = false;
+
+#ifdef INJECT_ACTIVATION_SIGNAL
+struct sigaction g_previous_activation;
+#endif
+
 /* public function definitions ************************************************/
 
 /*++
@@ -108,7 +114,7 @@ Parameters :
 Return :
     TRUE in case of a success, FALSE otherwise
 --*/
-BOOL SEHInitializeSignals()
+BOOL SEHInitializeSignals(DWORD flags)
 {
     TRACE("Initializing signal handlers\n");
 
@@ -132,10 +138,15 @@ BOOL SEHInitializeSignals()
     handle_signal(SIGSEGV, sigsegv_handler, &g_previous_sigsegv);
     handle_signal(SIGINT, sigint_handler, &g_previous_sigint);
     handle_signal(SIGQUIT, sigquit_handler, &g_previous_sigquit);
-    handle_signal(SIGTERM, sigterm_handler, &g_previous_sigterm);
+
+    if (flags & PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER)
+    {
+        handle_signal(SIGTERM, sigterm_handler, &g_previous_sigterm);
+        registered_sigterm_handler = true;
+    }
 
 #ifdef INJECT_ACTIVATION_SIGNAL
-    handle_signal(INJECT_ACTIVATION_SIGNAL, inject_activation_handler, NULL);
+    handle_signal(INJECT_ACTIVATION_SIGNAL, inject_activation_handler, &g_previous_activation);
 #endif
 
     /* The default action for SIGPIPE is process termination.
@@ -178,7 +189,15 @@ void SEHCleanupSignals()
     restore_signal(SIGSEGV, &g_previous_sigsegv);
     restore_signal(SIGINT, &g_previous_sigint);
     restore_signal(SIGQUIT, &g_previous_sigquit);
-    restore_signal(SIGTERM, &g_previous_sigterm);
+
+    if (registered_sigterm_handler)
+    {
+        restore_signal(SIGTERM, &g_previous_sigterm);
+    }
+
+#ifdef INJECT_ACTIVATION_SIGNAL
+    restore_signal(INJECT_ACTIVATION_SIGNAL, &g_previous_activation);
+#endif
 }
 
 /* internal function definitions **********************************************/
@@ -430,28 +449,29 @@ Parameters :
 static void inject_activation_handler(int code, siginfo_t *siginfo, void *context)
 {
     // Only accept activations from the current process
-    if (siginfo->si_pid == getpid())
+    if (g_activationFunction != NULL && siginfo->si_pid == getpid())
     {
-        if (g_activationFunction != NULL)
+        _ASSERTE(g_safeActivationCheckFunction != NULL);
+
+        native_context_t *ucontext = (native_context_t *)context;
+
+        CONTEXT winContext;
+        CONTEXTFromNativeContext(
+            ucontext, 
+            &winContext, 
+            CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT);
+
+        if (g_safeActivationCheckFunction(CONTEXTGetPC(&winContext), /* checkingCurrentThread */ TRUE))
         {
-            _ASSERTE(g_safeActivationCheckFunction != NULL);
-
-            native_context_t *ucontext = (native_context_t *)context;
-
-            CONTEXT winContext;
-            CONTEXTFromNativeContext(
-                ucontext, 
-                &winContext, 
-                CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT);
-
-            if (g_safeActivationCheckFunction(CONTEXTGetPC(&winContext), /* checkingCurrentThread */ TRUE))
-            {
-                g_activationFunction(&winContext);
-            }
-
-            // Activation function may have modified the context, so update it.
-            CONTEXTToNativeContext(&winContext, ucontext);
+            g_activationFunction(&winContext);
         }
+
+        // Activation function may have modified the context, so update it.
+        CONTEXTToNativeContext(&winContext, ucontext);
+    }
+    else if (g_previous_activation.sa_sigaction != NULL)
+    {
+        g_previous_activation.sa_sigaction(code, siginfo, context);
     }
 }
 #endif

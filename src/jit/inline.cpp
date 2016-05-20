@@ -7,6 +7,8 @@
 #pragma hdrstop
 #endif
 
+#include "inlinepolicy.h"
+
 // Lookup table for inline description strings
 
 static const char* InlineDescriptions[] =
@@ -345,7 +347,7 @@ InlineContext::InlineContext(InlineStrategy* strategy)
 #if defined(DEBUG) || defined(INLINE_DATA)
 
 //------------------------------------------------------------------------
-// Dump: Dump an InlineContext entry and all descendants to stdout
+// Dump: Dump an InlineContext entry and all descendants to jitstdout
 //
 // Arguments:
 //    indent   - indentation level for this node
@@ -441,7 +443,7 @@ void InlineContext::DumpData(unsigned indent)
     if (m_Parent == nullptr)
     {
         // Root method... cons up a policy so we can display the name
-        InlinePolicy* policy = InlinePolicy::GetPolicy(compiler, true);
+        InlinePolicy* policy = InlinePolicy::GetPolicy(compiler, nullptr, true);
         printf("\nInlines [%u] into \"%s\" [%s]\n",
                m_InlineStrategy->GetInlineCount(),
                calleeName,
@@ -451,7 +453,7 @@ void InlineContext::DumpData(unsigned indent)
     {
         const char* inlineReason = InlGetObservationString(m_Observation);
         printf("%*s%u,\"%s\",\"%s\"", indent, "", m_Ordinal, inlineReason, calleeName);
-        m_Policy->DumpData(stdout);
+        m_Policy->DumpData(jitstdout);
         printf("\n");
     }
 
@@ -477,11 +479,6 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
         m_Sibling->DumpXml(file, indent);
     }
 
-    Compiler* compiler = m_InlineStrategy->GetCompiler();
-
-    mdMethodDef calleeToken =
-        compiler->info.compCompHnd->getMethodDefFromMethod(m_Callee);
-
     const bool isRoot = m_Parent == nullptr;
     const bool hasChild = m_Child != nullptr;
     const char* inlineType = m_Success ? "Inline" : "FailedInline";
@@ -489,6 +486,13 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
 
     if (!isRoot)
     {
+        Compiler* compiler = m_InlineStrategy->GetCompiler();
+
+        mdMethodDef calleeToken =
+            compiler->info.compCompHnd->getMethodDefFromMethod(m_Callee);
+        unsigned calleeHash =
+            compiler->info.compCompHnd->getMethodHash(m_Callee);
+
         const char* inlineReason = InlGetObservationString(m_Observation);
 
         int offset = -1;
@@ -499,6 +503,7 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
 
         fprintf(file, "%*s<%s>\n", indent, "", inlineType);
         fprintf(file, "%*s<Token>%u</Token>\n", indent + 2, "", calleeToken);
+        fprintf(file, "%*s<Hash>%u</Hash>\n", indent + 2, "", calleeHash);
         fprintf(file, "%*s<Offset>%u</Offset>\n", indent + 2, "", offset);
         fprintf(file, "%*s<Reason>%s</Reason>\n", indent + 2, "", inlineReason);
         newIndent = indent + 2;
@@ -531,20 +536,23 @@ void InlineContext::DumpXml(FILE* file, unsigned indent)
 // InlineResult: Construct an InlineResult to evaluate a particular call
 // for inlining.
 //
-// Arguments
-//   compiler - the compiler instance examining a call for inlining
-//   call     - the call in question
-//   context  - descrptive string to describe the context of the decision
+// Arguments:
+//   compiler      - the compiler instance examining a call for inlining
+//   call          - the call in question
+//   inlineContext - the inline context for the inline, if known
+//   description   - string describing the context of the decision
 
-InlineResult::InlineResult(Compiler*    compiler,
-                           GenTreeCall* call,
-                           const char*  context)
+InlineResult::InlineResult(Compiler*      compiler,
+                           GenTreeCall*   call,
+                           InlineContext* inlineContext,
+                           const char*    description)
     : m_RootCompiler(nullptr)
     , m_Policy(nullptr)
     , m_Call(call)
+    , m_InlineContext(inlineContext)
     , m_Caller(nullptr)
     , m_Callee(nullptr)
-    , m_Context(context)
+    , m_Description(description)
     , m_Reported(false)
 {
     // Set the compiler instance
@@ -552,7 +560,7 @@ InlineResult::InlineResult(Compiler*    compiler,
 
     // Set the policy
     const bool isPrejitRoot = false;
-    m_Policy = InlinePolicy::GetPolicy(m_RootCompiler, isPrejitRoot);
+    m_Policy = InlinePolicy::GetPolicy(m_RootCompiler, m_InlineContext, isPrejitRoot);
 
     // Get method handle for caller. Note we use the
     // handle for the "immediate" caller here.
@@ -570,9 +578,9 @@ InlineResult::InlineResult(Compiler*    compiler,
 // method as a possible inline candidate, while prejtting.
 //
 // Arguments:
-//    compiler - the compiler instance doing the prejitting
-//    method   - the method in question
-//    context  - descrptive string to describe the context of the decision
+//    compiler    - the compiler instance doing the prejitting
+//    method      - the method in question
+//    description - string describing the context of the decision
 //
 // Notes:
 //    Used only during prejitting to try and pre-identify methods that
@@ -583,13 +591,14 @@ InlineResult::InlineResult(Compiler*    compiler,
 
 InlineResult::InlineResult(Compiler*              compiler,
                            CORINFO_METHOD_HANDLE  method,
-                           const char*            context)
+                           const char*            description)
     : m_RootCompiler(nullptr)
     , m_Policy(nullptr)
     , m_Call(nullptr)
+    , m_InlineContext(nullptr)
     , m_Caller(nullptr)
     , m_Callee(method)
-    , m_Context(context)
+    , m_Description(description)
     , m_Reported(false)
 {
     // Set the compiler instance
@@ -597,7 +606,7 @@ InlineResult::InlineResult(Compiler*              compiler,
 
     // Set the policy
     const bool isPrejitRoot = true;
-    m_Policy = InlinePolicy::GetPolicy(m_RootCompiler, isPrejitRoot);
+    m_Policy = InlinePolicy::GetPolicy(m_RootCompiler, nullptr, isPrejitRoot);
 }
 
 //------------------------------------------------------------------------
@@ -637,7 +646,7 @@ void InlineResult::Report()
 
         callee = (m_Callee == nullptr) ? "n/a" : m_RootCompiler->eeGetMethodFullName(m_Callee);
 
-        JITDUMP(format, m_Context, ResultString(), ReasonString(), caller, callee);
+        JITDUMP(format, m_Description, ResultString(), ReasonString(), caller, callee);
     }
 
     // If the inline failed, leave information on the call so we can
@@ -686,7 +695,7 @@ void InlineResult::Report()
     if (IsDecided())
     {
         const char* format = "INLINER: during '%s' result '%s' reason '%s'\n";
-        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, format, m_Context, ResultString(), ReasonString()));
+        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, format, m_Description, ResultString(), ReasonString()));
         COMP_HANDLE comp = m_RootCompiler->info.compCompHnd;
         comp->reportInliningDecision(m_Caller, m_Callee, Result(), ReasonString());
     }
@@ -1214,7 +1223,7 @@ void InlineStrategy::DumpData()
     {
         assert(limit <= 0);
         const bool isPrejitRoot = (opts.eeFlags & CORJIT_FLG_PREJIT) != 0;
-        m_LastSuccessfulPolicy = InlinePolicy::GetPolicy(m_Compiler, isPrejitRoot);
+        m_LastSuccessfulPolicy = InlinePolicy::GetPolicy(m_Compiler, nullptr, isPrejitRoot);
 
         // Add in a bit of data....
         const bool isForceInline = (info.compFlags & CORINFO_FLG_FORCEINLINE) != 0;
@@ -1325,9 +1334,40 @@ void InlineStrategy::DumpXml(FILE* file, unsigned indent)
         microsecondsSpentJitting = (unsigned) ((counts / countsPerSec) * 1000 * 1000);
     }
 
+    // Get method name just for root method, to make it a bit easier
+    // to search for things in the inline xml.
+    const char* methodName = info.compCompHnd->getMethodName(info.compMethodHnd, nullptr);
+
+    // Cheap xml quoting for values. Only < and & are troublemakers,
+    // but change > for symmetry.
+    //
+    // Ok to truncate name, just ensure it's null terminated.
+    char buf[64];
+    strncpy(buf, methodName, sizeof(buf));
+    buf[sizeof(buf)-1] = 0;
+
+    for (int i = 0; i < sizeof(buf); i++)
+    {
+        switch (buf[i])
+        {
+        case '<':
+            buf[i] = '[';
+            break;
+        case '>':
+            buf[i] = ']';
+            break;
+        case '&':
+            buf[i] = '#';
+            break;
+        default:
+            break;
+        }
+    }
+
     fprintf(file, "%*s<Method>\n", indent, "");
     fprintf(file, "%*s<Token>%u</Token>\n", indent + 2, "", currentMethodToken);
     fprintf(file, "%*s<Hash>%u</Hash>\n", indent + 2, "", hash);
+    fprintf(file, "%*s<Name>%s</Name>\n", indent + 2, "", buf);
     fprintf(file, "%*s<InlineCount>%u</InlineCount>\n", indent + 2, "", m_InlineCount);
     fprintf(file, "%*s<HotSize>%u</HotSize>\n", indent + 2, "", info.compTotalHotCodeSize);
     fprintf(file, "%*s<ColdSize>%u</ColdSize>\n", indent + 2, "", info.compTotalColdCodeSize);
@@ -1371,6 +1411,9 @@ void InlineStrategy::FinalizeXml(FILE* file)
         // Workaroud compShutdown getting called twice.
         s_HasDumpedXmlHeader = false;
     }
+
+    // Finalize reading inline xml
+    ReplayPolicy::FinalizeXml();
 }
 
 #endif // defined(DEBUG) || defined(INLINE_DATA)

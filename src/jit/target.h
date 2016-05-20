@@ -337,7 +337,16 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
 #if defined(_TARGET_X86_)
 
   #define CPU_LOAD_STORE_ARCH      0
+
+#ifdef LEGACY_BACKEND
   #define CPU_LONG_USES_REGPAIR    1
+#else
+  #define CPU_LONG_USES_REGPAIR    0       // RyuJIT x86 doesn't use the regPairNo field to record register pairs for long
+                                           // type tree nodes, and instead either decomposes them (for non-atomic operations)
+                                           // or stores multiple regNumber values for operations such as calls where the
+                                           // register definitions are effectively "atomic".
+#endif // LEGACY_BACKEND
+
   #define CPU_HAS_FP_SUPPORT       1
   #define ROUND_FLOAT              1       // round intermed float expression results
   #define CPU_HAS_BYTE_REGS        1
@@ -1505,6 +1514,7 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #define RBM_CALLEE_SAVED        (RBM_INT_CALLEE_SAVED | RBM_FLT_CALLEE_SAVED)
   #define RBM_CALLEE_TRASH        (RBM_INT_CALLEE_TRASH | RBM_FLT_CALLEE_TRASH)
   #define RBM_CALLEE_TRASH_NOGC   (RBM_R12|RBM_R13|RBM_R14|RBM_R15)
+  #define REG_DEFAULT_HELPER_CALL_TARGET REG_R12
 
   #define RBM_ALLINT              (RBM_INT_CALLEE_SAVED | RBM_INT_CALLEE_TRASH)
   #define RBM_ALLFLOAT            (RBM_FLT_CALLEE_SAVED | RBM_FLT_CALLEE_TRASH)
@@ -1596,6 +1606,11 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #define REG_VIRTUAL_STUB_PARAM          REG_R11
   #define RBM_VIRTUAL_STUB_PARAM          RBM_R11
   #define PREDICT_REG_VIRTUAL_STUB_PARAM  PREDICT_REG_R11
+
+  // R2R indirect call. Use the same registers as VSD
+  #define REG_R2R_INDIRECT_PARAM          REG_R11
+  #define RBM_R2R_INDIRECT_PARAM          RBM_R11
+  #define PREDICT_REG_RER_INDIRECT_PARAM  PREDICT_REG_R11
 
   // Registers used by PInvoke frame setup
   #define REG_PINVOKE_FRAME        REG_R8

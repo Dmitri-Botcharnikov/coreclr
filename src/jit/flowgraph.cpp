@@ -7036,17 +7036,19 @@ GenTreePtr    Compiler::fgOptimizeDelegateConstructor(GenTreePtr call, CORINFO_C
             {
                 // The first argument of the helper is delegate this pointer
                 GenTreeArgList* helperArgs = gtNewArgList(call->gtCall.gtCallObjp);
+                CORINFO_CONST_LOOKUP entryPoint;
 
                 // The second argument of the helper is the target object pointers
                 helperArgs->gtOp.gtOp2 = gtNewArgList(call->gtCall.gtCallArgs->gtOp.gtOp1);
 
                 call = gtNewHelperCallNode(CORINFO_HELP_READYTORUN_DELEGATE_CTOR, TYP_VOID, GTF_EXCEPT, helperArgs);
 #if COR_JIT_EE_VERSION > 460
-                info.compCompHnd->getReadyToRunDelegateCtorHelper(targetMethod->gtFptrVal.gtLdftnResolvedToken, clsHnd, &call->gtCall.gtEntryPoint);
+                info.compCompHnd->getReadyToRunDelegateCtorHelper(targetMethod->gtFptrVal.gtLdftnResolvedToken, clsHnd, &entryPoint);
 #else
                 info.compCompHnd->getReadyToRunHelper(targetMethod->gtFptrVal.gtLdftnResolvedToken,
-                    CORINFO_HELP_READYTORUN_DELEGATE_CTOR, &call->gtCall.gtEntryPoint);
+                    CORINFO_HELP_READYTORUN_DELEGATE_CTOR, &entryPoint);
 #endif
+                call->gtCall.setEntryPoint(entryPoint);
             }
         }
         else
@@ -7497,8 +7499,7 @@ GenTreePtr Compiler::fgGetCritSectOfStaticMethod()
 
 void                Compiler::fgAddSyncMethodEnterExit()
 {
-    if ((info.compFlags & CORINFO_FLG_SYNCH) == 0)
-        return;
+    assert((info.compFlags & CORINFO_FLG_SYNCH) != 0);
 
     // We need to do this transformation before funclets are created.
     assert(!fgFuncletsCreated);
@@ -7808,6 +7809,72 @@ void                Compiler::fgConvertSyncReturnToLeave(BasicBlock* block)
 
 #endif // !_TARGET_X86_
 
+//------------------------------------------------------------------------
+// fgAddReversePInvokeEnterExit: Add enter/exit calls for reverse PInvoke methods
+//
+// Arguments:
+//      None.
+//
+// Return Value:
+//      None.
+
+void Compiler::fgAddReversePInvokeEnterExit()
+{
+    assert(opts.IsReversePInvoke());
+
+#if COR_JIT_EE_VERSION > 460
+    lvaReversePInvokeFrameVar = lvaGrabTempWithImplicitUse(false DEBUGARG("Reverse Pinvoke FrameVar"));
+
+    LclVarDsc* varDsc = &lvaTable[lvaReversePInvokeFrameVar];
+    varDsc->lvType = TYP_BLK;
+    varDsc->lvExactSize = eeGetEEInfo()->sizeOfReversePInvokeFrame;
+
+    GenTreePtr      tree;
+
+    // Add enter pinvoke exit callout at the start of prolog
+
+    tree = gtNewOperNode(GT_ADDR, TYP_I_IMPL, gtNewLclvNode(lvaReversePInvokeFrameVar, TYP_BLK));
+
+    tree = gtNewHelperCallNode(CORINFO_HELP_JIT_REVERSE_PINVOKE_ENTER,
+        TYP_VOID, 0,
+        gtNewArgList(tree));
+
+    fgEnsureFirstBBisScratch();
+
+    fgInsertStmtAtBeg(fgFirstBB, tree);
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("\nReverse PInvoke method - Add reverse pinvoke enter in first basic block [%08p]\n", dspPtr(fgFirstBB));
+        gtDispTree(tree);
+        printf("\n");
+    }
+#endif
+
+    // Add reverse pinvoke exit callout at the end of epilog
+
+    tree = gtNewOperNode(GT_ADDR, TYP_I_IMPL, gtNewLclvNode(lvaReversePInvokeFrameVar, TYP_BLK));
+
+    tree = gtNewHelperCallNode(CORINFO_HELP_JIT_REVERSE_PINVOKE_EXIT,
+        TYP_VOID, 0,
+        gtNewArgList(tree));
+
+    assert(genReturnBB != nullptr);
+
+    fgInsertStmtAtEnd(genReturnBB, tree);
+
+#ifdef DEBUG
+    if (verbose)
+    {
+        printf("\nReverse PInvoke method - Add reverse pinvoke exit in return basic block [%08p]\n", dspPtr(genReturnBB));
+        gtDispTree(tree);
+        printf("\n");
+    }
+#endif
+
+#endif // COR_JIT_EE_VERSION > 460
+}
 
 /*****************************************************************************
  *
@@ -7913,12 +7980,6 @@ void                Compiler::fgAddInternal()
 
     /* Assume we will generate a single shared return sequence */
 
-    // This is the node for the oneReturn statement.
-    // It could be as simple as a CallNode if we only have
-    // only one callout. It will be a comma tree of CallNodes
-    // if we have multiple callouts.
-    //
-    GenTreePtr  oneReturnStmtNode = NULL;
     ULONG       returnWeight      = 0;
     bool        oneReturn;
     bool        allProfWeight;
@@ -7926,13 +7987,13 @@ void                Compiler::fgAddInternal()
     //
     //  We will generate just one epilog (return block)
     //   when we are asked to generate enter/leave callbacks
+    //   or for methods with PInvoke
     //   or for methods calling into unmanaged code
     //   or for synchronized methods.
     //
     if ( compIsProfilerHookNeeded()    ||
-#if INLINE_NDIRECT
          (info.compCallUnmanaged != 0) ||
-#endif
+         opts.IsReversePInvoke() ||
          ((info.compFlags & CORINFO_FLG_SYNCH) != 0))
     {
         // We will generate only one return block
@@ -8010,7 +8071,10 @@ void                Compiler::fgAddInternal()
     // BBJ_RETURN block gets placed at the top-level, not within an EH region. (Otherwise,
     // we'd have to be really careful when creating the synchronized method try/finally
     // not to include the BBJ_RETURN block.)
-    fgAddSyncMethodEnterExit();
+    if ((info.compFlags & CORINFO_FLG_SYNCH) != 0)
+    {
+        fgAddSyncMethodEnterExit();
+    }
 #endif // !_TARGET_X86_
 
     if  (oneReturn)
@@ -8122,7 +8186,6 @@ void                Compiler::fgAddInternal()
         genReturnLocal = BAD_VAR_NUM;
     }
 
-#if INLINE_NDIRECT
     if (info.compCallUnmanaged != 0)
     {
         // The P/Invoke helpers only require a frame variable, so only allocate the
@@ -8152,7 +8215,6 @@ void                Compiler::fgAddInternal()
         }
 #endif
     }
-#endif
 
     // Do we need to insert a "JustMyCode" callback?
 
@@ -8300,34 +8362,13 @@ void                Compiler::fgAddInternal()
                                        gtNewArgList(tree));
         }
 
-        /* Add the exitCrit expression to the oneReturnStmtNode */
-        if (oneReturnStmtNode != NULL)
-        {
-            //
-            // We add the newly created "tree" to op1, so we can evaluate the last added
-            // expression first.
-            //
-            oneReturnStmtNode = gtNewOperNode(GT_COMMA,
-                                              TYP_VOID,
-                                              tree,
-                                              oneReturnStmtNode);
-
-        }
-        else
-        {
-            oneReturnStmtNode = tree;
-        }
-
+        fgInsertStmtAtEnd(genReturnBB, tree);
 
 #ifdef DEBUG
         if (verbose)
         {
             printf("\nSynchronized method - Add exit expression ");
             printTreeID(tree);
-            printf(" to oneReturnStmtNode ");
-            printTreeID(oneReturnStmtNode);
-            printf("\nCurrent oneReturnStmtNode is\n");
-            gtDispTree(oneReturnStmtNode);
             printf("\n");
         }
 #endif
@@ -8371,6 +8412,11 @@ void                Compiler::fgAddInternal()
 
     }
 
+    if (opts.IsReversePInvoke())
+    {
+        fgAddReversePInvokeEnterExit();
+    }
+
     //
     //  Add 'return' expression to the return block if we made it as "oneReturn" before.
     //
@@ -8381,13 +8427,6 @@ void                Compiler::fgAddInternal()
         //
         // Make the 'return' expression.
         //
-
-        // spill any value that is currently in the oneReturnStmtNode
-        if (oneReturnStmtNode != nullptr)
-        {
-            fgInsertStmtAtEnd(genReturnBB, oneReturnStmtNode);
-            oneReturnStmtNode = nullptr;
-        }
 
         //make sure to reload the return value as part of the return (it is saved by the "real return").
         if (genReturnLocal != BAD_VAR_NUM)
@@ -19188,7 +19227,7 @@ ONE_FILE_PER_METHOD:;
     }
     else if (wcscmp(filename, W("stdout")) == 0)
     {
-        fgxFile = stdout;
+        fgxFile = jitstdout;
         *wbDontClose = true;
     }
     else if (wcscmp(filename, W("stderr")) == 0)
@@ -19527,7 +19566,7 @@ bool               Compiler::fgDumpFlowGraph(Phases phase)
 
     if (dontClose)
     {
-        // fgxFile is stdout or stderr
+        // fgxFile is jitstdout or stderr
         fprintf(fgxFile, "\n");
     }
     else
@@ -21442,7 +21481,7 @@ void                Compiler::fgInline()
             if ((expr->gtOper == GT_CALL) && ((expr->gtFlags & GTF_CALL_INLINE_CANDIDATE) != 0))
             {
                 GenTreeCall* call = expr->AsCall();
-                InlineResult inlineResult(this, call, "fgInline");
+                InlineResult inlineResult(this, call, stmt->gtInlineContext, "fgInline");
 
                 fgMorphStmt = stmt;
 
@@ -21568,7 +21607,7 @@ Compiler::fgWalkResult      Compiler::fgFindNonInlineCandidate(GenTreePtr* pTree
 void Compiler::fgNoteNonInlineCandidate(GenTreePtr   tree,
                                         GenTreeCall* call)
 {
-    InlineResult inlineResult(this, call, "fgNotInlineCandidate");
+    InlineResult inlineResult(this, call, nullptr, "fgNotInlineCandidate");
     InlineObservation currentObservation = InlineObservation::CALLSITE_NOT_CANDIDATE;
 
     // Try and recover the reason left behind when the jit decided

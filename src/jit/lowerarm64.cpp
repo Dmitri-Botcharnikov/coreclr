@@ -367,6 +367,7 @@ void Lowering::TreeNodeInfoInit(GenTree* stmt)
         case GT_MULHI:
         case GT_UDIV:
             {
+                // TODO-ARM64-CQ: Optimize a divide by power of 2 as we do for AMD64
                 info->srcCount = 2;
                 info->dstCount = 1;
             }
@@ -815,7 +816,7 @@ void Lowering::TreeNodeInfoInit(GenTree* stmt)
                         else if (!compiler->info.compInitMem)
                         {
                             // No need to initialize allocated stack space.
-                            if (sizeVal < CORINFO_PAGE_SIZE)
+                            if (sizeVal < compiler->eeGetPageSize())
                             {
                                 info->internalIntCount = 0;
                             }

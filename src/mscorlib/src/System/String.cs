@@ -552,16 +552,17 @@ namespace System {
 
         // Determines whether two strings match.
         [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
-        public override bool Equals(Object obj) {
-            if (this == null)                        //this is necessary to guard against reverse-pinvokes and
-                throw new NullReferenceException();  //other callers who do not use the callvirt instruction
+        public override bool Equals(Object obj)
+        {
+            if (this == null)                        // this is necessary to guard against reverse-pinvokes and
+                throw new NullReferenceException();  // other callers who do not use the callvirt instruction
 
-            String str = obj as String;
+            if (object.ReferenceEquals(this, obj))
+                return true;
+
+            string str = obj as string;
             if (str == null)
                 return false;
-
-            if (Object.ReferenceEquals(this, obj))
-                return true;
 
             if (this.Length != str.Length)
                 return false;
@@ -572,15 +573,20 @@ namespace System {
         // Determines whether two strings match.
         [Pure]
         [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
-        public bool Equals(String value) {
-            if (this == null)                        //this is necessary to guard against reverse-pinvokes and
-                throw new NullReferenceException();  //other callers who do not use the callvirt instruction
+        public bool Equals(String value)
+        {
+            if (this == null)                        // this is necessary to guard against reverse-pinvokes and
+                throw new NullReferenceException();  // other callers who do not use the callvirt instruction
 
+            if (object.ReferenceEquals(this, value))
+                return true;
+
+            // NOTE: No need to worry about casting to object here.
+            // If either side of an == comparison between strings
+            // is null, Roslyn generates a simple ceq instruction
+            // instead of calling string.op_Equality.
             if (value == null)
                 return false;
-
-            if (Object.ReferenceEquals(this, value))
-                return true;
             
             if (this.Length != value.Length)
                 return false;
@@ -2542,28 +2548,63 @@ namespace System {
         //
         [Pure]
         public String PadLeft(int totalWidth) {
-            return PadHelper(totalWidth, ' ', false);
+            return PadLeft(totalWidth, ' ');
         }
 
         [Pure]
+        [System.Security.SecuritySafeCritical]  // auto-generated
         public String PadLeft(int totalWidth, char paddingChar) {
-            return PadHelper(totalWidth, paddingChar, false);
+            if (totalWidth < 0)
+                throw new ArgumentOutOfRangeException("totalWidth", Environment.GetResourceString("ArgumentOutOfRange_NeedNonNegNum"));
+            int oldLength = Length;
+            int count = totalWidth - oldLength;
+            if (count <= 0)
+                return this;
+            String result = FastAllocateString(totalWidth);
+            unsafe
+            {
+                fixed (char* dst = &result.m_firstChar)
+                {
+                    for (int i = 0; i < count; i++)
+                        dst[i] = paddingChar;
+                    fixed (char* src = &m_firstChar)
+                    {
+                        wstrcpy(dst + count, src, oldLength);
+                    }
+                }
+            }
+            return result;
         }
 
         [Pure]
         public String PadRight(int totalWidth) {
-            return PadHelper(totalWidth, ' ', true);
+            return PadRight(totalWidth, ' ');
         }
 
         [Pure]
-        public String PadRight(int totalWidth, char paddingChar) {
-            return PadHelper(totalWidth, paddingChar, true);
-        }
-    
-    
         [System.Security.SecuritySafeCritical]  // auto-generated
-        [MethodImplAttribute(MethodImplOptions.InternalCall)]
-        private extern String PadHelper(int totalWidth, char paddingChar, bool isRightPadded);
+        public String PadRight(int totalWidth, char paddingChar) {
+            if (totalWidth < 0)
+                throw new ArgumentOutOfRangeException("totalWidth", Environment.GetResourceString("ArgumentOutOfRange_NeedNonNegNum"));
+            int oldLength = Length;
+            int count = totalWidth - oldLength;
+            if (count <= 0)
+                return this;
+            String result = FastAllocateString(totalWidth);
+            unsafe
+            {
+                fixed (char* dst = &result.m_firstChar)
+                {
+                    fixed (char* src = &m_firstChar)
+                    {
+                        wstrcpy(dst, src, oldLength);
+                    }
+                    for (int i = 0; i < count; i++)
+                        dst[oldLength + i] = paddingChar;
+                }
+            }
+            return result;
+        }
     
         // Determines whether a specified string is a prefix of the current instance
         //

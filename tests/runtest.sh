@@ -44,7 +44,8 @@ function print_usage {
     echo '  -v, --verbose                    : Show output from each test.'
     echo '  -h|--help                        : Show usage information.'
     echo '  --useServerGC                    : Enable server GC for this test run'
-    echo '  --test-en                        : Script to set environment variables for tests'
+    echo '  --test-env                       : Script to set environment variables for tests'
+    echo '  --runcrossgentests               : Runs the ready to run tests' 
     echo ''
     echo 'Runtime Code Coverage options:'
     echo '  --coreclr-coverage               : Optional argument to get coreclr code coverage reports'
@@ -61,6 +62,7 @@ function print_results {
     echo "======================="
     echo "     Test Results"
     echo "======================="
+    echo "# CoreCLR Bin Dir  : $coreClrBinDir"
     echo "# Tests Discovered : $countTotalTests"
     echo "# Passed           : $countPassedTests"
     echo "# Failed           : $countFailedTests"
@@ -332,7 +334,7 @@ function create_core_overlay {
         exit_with_error "$errorSource" "One of --coreOverlayDir or --coreFxBinDir must be specified." "$printUsage"
     fi
     if [ ! -d "$coreFxNativeBinDir/Native" ]; then
-        exit_with_error "$errorSource" "Directory specified by --coreFxBinDir does not exist: $coreFxNativeBinDir/Native"
+        exit_with_error "$errorSource" "Directory specified by --coreNativeFxBinDir does not exist: $coreFxNativeBinDir/Native"
     fi
 
     # Create the overlay
@@ -523,12 +525,6 @@ function run_test {
     local scriptFileName=$(basename "$scriptFilePath")
     local outputFileName=$(basename "$outputFilePath")
 
-    # Convert DOS line endings to Unix if needed
-    perl -pi -e 's/\r\n|\n|\r/\n/g' "$scriptFileName"
-    
-    # Add executable file mode bit if needed
-    chmod +x "$scriptFileName"
-
     "./$scriptFileName" >"$outputFileName" 2>&1
     return $?
 }
@@ -601,6 +597,22 @@ function finish_remaining_tests {
     ((nextProcessIndex = 0))
 }
 
+function prep_test {
+    local scriptFilePath=$1
+
+    test "$verbose" == 1 && echo "Preparing $scriptFilePath"
+
+    # Convert DOS line endings to Unix if needed
+    perl -pi -e 's/\r\n|\n|\r/\n/g' "$scriptFilePath"
+    
+    # Add executable file mode bit if needed
+    chmod +x "$scriptFilePath"
+
+    #remove any NI and Locks
+    rm -f *.ni.*
+    rm -rf lock
+}
+
 function start_test {
     local scriptFilePath=$1
     if ((runFailingTestsOnly == 1)) && ! is_failing_test "$scriptFilePath"; then
@@ -653,6 +665,14 @@ function set_test_directories {
 function run_tests_in_directory {
     local testDir=$1
 
+    # Recursively search through directories for .sh files to prepare them.
+    # Note: This needs to occur before any test runs as some of the .sh files
+    # depend on other .sh files
+    for scriptFilePath in $(find "$testDir" -type f -iname '*.sh' | sort)
+    do
+        prep_test "${scriptFilePath:2}"
+    done
+    echo "The tests have been prepared"
     # Recursively search through directories for .sh files to run.
     for scriptFilePath in $(find "$testDir" -type f -iname '*.sh' | sort)
     do
@@ -764,6 +784,9 @@ do
         --disableEventLogging)
             ((disableEventLogging = 1))
             ;;
+        --runcrossgentests)
+            ((RunCrossGenTests = 1))
+            ;;
         --sequential)
             ((maxProcesses = 1))
             ;;
@@ -800,6 +823,9 @@ if ((disableEventLogging == 0)); then
     export COMPlus_EnableEventLog=1
 fi
 
+if ((RunCrossGenTests == 1)); then
+    export RunCrossGen=1
+fi
 export CORECLR_SERVER_GC="$serverGC"
 
 if [ -z "$testRootDir" ]; then
@@ -869,36 +895,8 @@ else
     load_failing_tests
 fi
 
-
-
 scriptPath=$(dirname $0)
-
-# Check if environment variables are provided
-if [ ! -z "$testEnv" ]; then
-    # Check if this is GC stress testing
-    GCStressLevel=`(source $testEnv; echo $COMPlus_GCStress)`
-    # Set __TestEnv that will be executed just before running tests
-    absTestEnvPath=`readlink -f ${testEnv}`
-    export __TestEnv='source '${absTestEnvPath}
-fi
-
-# Still support setting COMPlus_GCStress before runtest.sh but recommend
-# using --test-env option. 
-if [ -z "$GCStressLevel" ]; then
-    if [ -n "$COMPlus_GCStress" ]; then
-        GCStressLevel=`echo $COMPlus_GCStress`
-    fi
-fi
-
-# Download runtime dependent libraries
-if [ ! -z "$GCStressLevel" ]; then
-    ${scriptPath}/setup-runtime-dependencies.sh --outputDir=$coreOverlayDir
-    if [ $? -ne 0 ] 
-    then
-        echo 'Failed to download coredistools library'
-        exit $EXIT_CODE_EXCEPTION
-    fi
-fi
+${scriptPath}/setup-runtime-dependencies.sh --outputDir=$coreOverlayDir
 
 cd "$testRootDir"
 if [ -z "$testDirectories" ]
