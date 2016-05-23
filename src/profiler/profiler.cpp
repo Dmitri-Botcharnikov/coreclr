@@ -3,8 +3,11 @@
 #include "profiler.h"
 #include "log.h"
 
+Profiler *g_pCallbackObject; // Global reference to callback object
+
 Profiler::Profiler()
-    : m_referenceCount(1)
+    : m_refCount(1)
+    , m_dwShutdown(0)
 {
 }
 
@@ -33,18 +36,46 @@ HRESULT STDMETHODCALLTYPE Profiler::QueryInterface(
 
 ULONG STDMETHODCALLTYPE Profiler::AddRef(void)
 {
-    return __sync_fetch_and_add(&m_referenceCount, 1) + 1;
+    return __sync_fetch_and_add(&m_refCount, 1) + 1;
 }
 
 ULONG STDMETHODCALLTYPE Profiler::Release(void)
 {
-    LONG result = __sync_fetch_and_sub(&m_referenceCount, 1) - 1;
+    LONG result = __sync_fetch_and_sub(&m_refCount, 1) - 1;
     if (result == 0)
     {
         delete this;
     }
 
     return result;
+}
+
+HRESULT Profiler::CreateObject(
+    REFIID riid,
+    void **ppInterface)
+{
+    HRESULT hr = E_NOINTERFACE;
+
+    *ppInterface = NULL;
+    if (   (riid == IID_IUnknown)
+        || (riid == IID_ICorProfilerCallback)
+        || (riid == IID_ICorProfilerCallback2)
+        || (riid == IID_ICorProfilerCallback3))
+    {
+        Profiler *pProfiler;
+
+        pProfiler = new (nothrow) Profiler();
+        if (!pProfiler)
+            return E_OUTOFMEMORY;
+
+        hr = S_OK;
+
+        pProfiler->AddRef();
+
+        *ppInterface = static_cast<ICorProfilerCallback *>(pProfiler);
+    }
+
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE Profiler::Initialize(
@@ -62,12 +93,31 @@ HRESULT STDMETHODCALLTYPE Profiler::Initialize(
         info = NULL;
     }
 
+    g_pCallbackObject = this;
+
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE Profiler::Shutdown(void)
 {
     LogProfilerActivity("Shutdown\n");
+    m_dwShutdown++;
+    return S_OK;
+}
+
+HRESULT Profiler::DllDetachShutdown()
+{
+    // If no shutdown occurs during DLL_DETACH, release the callback
+    // interface pointer. This scenario will more than likely occur
+    // with any interop related program (e.g., a program that is
+    // comprised of both managed and unmanaged components).
+    m_dwShutdown++;
+    if ((m_dwShutdown == 1) && (g_pCallbackObject != NULL))
+    {
+        g_pCallbackObject->Release();
+        g_pCallbackObject = NULL;
+    }
+
     return S_OK;
 }
 

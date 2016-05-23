@@ -8,7 +8,7 @@ set(PROFILER_SOURCES_COMMON
   profiler.cpp
   log.cpp
   classfactory.cpp
-  entrypoint.cpp
+  dllmain.cpp
 )
 
 add_library_clr(coreprof

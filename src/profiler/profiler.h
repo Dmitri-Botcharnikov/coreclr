@@ -6,9 +6,18 @@
 #include <corhdr.h>
 #include <corprof.h>
 
+class Profiler;
+
+extern Profiler *g_pCallbackObject; // Global reference to callback object
+
 class Profiler : public ICorProfilerCallback3
 {
 public:
+
+    static HRESULT CreateObject(
+        REFIID riid,
+        void **ppInterface);
+
     Profiler();
 
     virtual ~Profiler();
@@ -25,6 +34,8 @@ public:
         IUnknown *pICorProfilerInfoUnk) override;
 
     virtual HRESULT STDMETHODCALLTYPE Shutdown(void) override;
+
+    HRESULT DllDetachShutdown();
 
     virtual HRESULT STDMETHODCALLTYPE AppDomainCreationStarted(
         AppDomainID appDomainId) override;
@@ -295,5 +306,6 @@ public:
     virtual HRESULT STDMETHODCALLTYPE ProfilerDetachSucceeded(void) override;
 
 private:
-    LONG m_referenceCount;
+    LONG m_refCount;
+    DWORD m_dwShutdown;
 };

@@ -1,64 +1,66 @@
 #include "classfactory.h"
-#include "profiler.h"
 
-ClassFactory::ClassFactory()
-    : m_referenceCount(1)
+ProfClassFactory::ProfClassFactory(const COCLASS_REGISTER *pCoClass)
+    : m_refCount(1)
+    , m_pCoClass(pCoClass)
 {
 }
 
-ClassFactory::~ClassFactory()
+ProfClassFactory::~ProfClassFactory()
 {
 }
 
-HRESULT STDMETHODCALLTYPE ClassFactory::QueryInterface(
+HRESULT STDMETHODCALLTYPE ProfClassFactory::QueryInterface(
     REFIID riid,
     void **ppvObject)
 {
-    if (riid == IID_IUnknown || riid == IID_IClassFactory)
+    // Pick the right v-table based on the IID passed in
+    if (riid == IID_IUnknown)
+        *ppvObject = (IUnknown *) this;
+    else if (riid == IID_IClassFactory)
+        *ppvObject = (IClassFactory *) this;
+    else
     {
-        *ppvObject = this;
-        this->AddRef();
-
-        return S_OK;
+        *ppvObject = NULL;
+        return E_NOINTERFACE;
     }
 
-    *ppvObject = NULL;
-    return E_NOINTERFACE;
+    // If successful, add a reference for out pointer and return
+    AddRef();
+
+    return S_OK;
 }
 
-ULONG STDMETHODCALLTYPE ClassFactory::AddRef(void)
+ULONG STDMETHODCALLTYPE ProfClassFactory::AddRef(void)
 {
-    return __sync_fetch_and_add(&m_referenceCount, 1) + 1;
+    return InterlockedIncrement(&m_refCount);
 }
 
-ULONG STDMETHODCALLTYPE ClassFactory::Release(void)
+ULONG STDMETHODCALLTYPE ProfClassFactory::Release(void)
 {
-    LONG result = __sync_fetch_and_sub(&m_referenceCount, 1) - 1;
-    if (result == 0)
+    LONG refCount = InterlockedIncrement(&m_refCount);
+    if (refCount == 0)
     {
         delete this;
     }
 
-    return result;
+    return refCount;
 }
 
-HRESULT STDMETHODCALLTYPE ClassFactory::CreateInstance(
+HRESULT STDMETHODCALLTYPE ProfClassFactory::CreateInstance(
     IUnknown *pUnkOuter,
     REFIID riid,
     void **ppvObject)
 {
-    if (riid == IID_ICorProfilerCallback2)
-    {
-        if (ppvObject != NULL)
-            *ppvObject = new Profiler();
+    // Aggregation is not supported by these objects
+    if (pUnkOuter != NULL)
+        return CLASS_E_NOAGGREGATION;
 
-        return S_OK;
-    }
-
-    return E_NOINTERFACE;
+    // Ask the object to create an instance of itself, and check the iid
+    return (*m_pCoClass->pfnCreateObject)(riid, ppvObject);
 }
 
-HRESULT STDMETHODCALLTYPE ClassFactory::LockServer(BOOL fLock)
+HRESULT STDMETHODCALLTYPE ProfClassFactory::LockServer(BOOL fLock)
 {
     return S_OK;
 }
