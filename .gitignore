@@ -14,7 +14,8 @@ syntax: glob
 *.sln.docstates
 
 # Build results
-[Dd]ebug/
+/[Dd]ebug/
+**/[Dd]ebug/
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
@@ -298,3 +299,6 @@ cross/rootfs/*
 
 # JIT32 files
 src/jit32
+
+# Ctags files
+.tags
