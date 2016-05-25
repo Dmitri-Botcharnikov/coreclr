@@ -1,0 +1,31 @@
+#include "unixasmmacros.inc"
+
+.syntax unified
+.thumb
+
+//
+// EXTERN_C void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
+//
+NESTED_ENTRY EnterNaked3, _TEXT, NoHandler
+    push    {r0-r7, lr}
+    bl      C_FUNC(EnterStub)
+    pop     {r0-r7, lr}
+NESTED_END EnterNaked3, _TEXT
+
+//
+// EXTERN_C void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
+//
+NESTED_ENTRY LeaveNaked3, _TEXT, NoHandler
+    push    {r0-r7, lr}
+    bl      C_FUNC(LeaveStub)
+    pop     {r0-r7, lr}
+NESTED_END LeaveNaked3, _TEXT
+
+//
+// EXTERN_C void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
+//
+NESTED_ENTRY TailcallNaked3, _TEXT, NoHandler
+    push    {r0-r7, lr}
+    bl      C_FUNC(TailcallStub)
+    pop     {r0-r7, lr}
+NESTED_END TailcallNaked3, _TEXT
