@@ -7158,113 +7158,14 @@ void CodeGen::genProfilingEnterCallback(regNumber  initReg,
         *pInitRegZeroed = false;
     }
 #elif defined(_TARGET_AMD64_)
-    unsigned        varNum;
-    LclVarDsc*      varDsc;
-
-    // Since the method needs to make a profiler callback, it should have out-going arg space allocated.
-    // noway_assert(compiler->lvaOutgoingArgSpaceVar != BAD_VAR_NUM);
-    // noway_assert(compiler->lvaOutgoingArgSpaceSize >= (4 * REGSIZE_BYTES));
-
-    // Home all arguments passed in arg registers (RCX, RDX, R8 and R9).
-    // In case of vararg methods, arg regs are already homed.
-    //
-    // Note: Here we don't need to worry about updating gc'info since enter
-    // callback is generated as part of prolog which is non-gc interruptible.
-    // Moreover GC cannot kick while executing inside profiler callback which is a
-    // profiler requirement so it can examine arguments which could be obj refs.
-    if (!compiler->info.compIsVarArgs)
-    {
-        for (varNum = 0, varDsc = compiler->lvaTable; varNum < compiler->info.compArgsCount; varNum++, varDsc++)
-        {
-            noway_assert(varDsc->lvIsParam);
-
-            if (!varDsc->lvIsRegArg)
-            {
-                continue;
-            }
-
-            var_types  storeType  = varDsc->lvaArgType();
-            regNumber  argReg    = varDsc->lvArgReg;
-            getEmitter()->emitIns_S_R(ins_Store(storeType), emitTypeSize(storeType), argReg, varNum, 0);
-        }
-    }
-
-    // Emit profiler EnterCallback(ProfilerMethHnd, caller's SP)
-    // RCX = ProfilerMethHnd 
-    if (compiler->compProfilerMethHndIndirected)
-    {
-        // Profiler hooks enabled during Ngen time.
-        // Profiler handle needs to be accessed through an indirection of a pointer.
-        getEmitter()->emitIns_R_AI(INS_mov, EA_PTR_DSP_RELOC, REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd);        
-    }
-    else
-    {
-        // No need to record relocations, if we are generating ELT hooks under the influence
-        // of complus_JitELtHookEnabled=1
-        if (compiler->opts.compJitELTHookEnabled)
-        {
-            genSetRegToIcon(REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd, TYP_I_IMPL);
-        }
-        else
-        {
-            instGen_Set_Reg_To_Imm(EA_8BYTE, REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd);
-        }
-    }
-
-    // RDX = caller's SP
-    // Notes
-    //   1) Here we can query caller's SP offset since prolog will be generated after final frame layout.
-    //   2) caller's SP relative offset to FramePointer will be negative.  We need to add absolute value
-    //      of that offset to FramePointer to obtain caller's SP value.
-    assert(compiler->lvaOutgoingArgSpaceVar != BAD_VAR_NUM);        
-    int callerSPOffset = compiler->lvaToCallerSPRelativeOffset(0, isFramePointerUsed());
-    getEmitter()->emitIns_R_AR (INS_lea, EA_PTRSIZE, REG_ARG_1, genFramePointerReg(), -callerSPOffset);
-
-    // Can't have a call until we have enough padding for rejit
-    genPrologPadForReJit();
-
+    inst_RV(INS_push, REG_RDI, TYP_REF);
+    inst_RV(INS_push, REG_RSI, TYP_REF);
     // This will emit either 
     // "call ip-relative 32-bit offset" or 
     // "mov rax, helper addr; call rax"
     genEmitHelperCall(CORINFO_HELP_PROF_FCN_ENTER, 0, EA_UNKNOWN);  
-
-    // TODO-AMD64-CQ: Rather than reloading, see if this could be optimized by combining with prolog
-    // generation logic that moves args around as required by first BB entry point conditions
-    // computed by LSRA.  Code pointers for investigating this further: genFnPrologCalleeRegArgs()
-    // and genEnregisterIncomingStackArgs().
-    // 
-    // Now reload arg registers from home locations.
-    // Vararg methods:
-    //   - we need to reload only known (i.e. fixed) reg args. 
-    //   - if floating point type, also reload it into corresponding integer reg
-    for (varNum = 0, varDsc = compiler->lvaTable; varNum < compiler->info.compArgsCount; varNum++, varDsc++)
-    {
-        noway_assert(varDsc->lvIsParam);
-
-        if (!varDsc->lvIsRegArg)
-        {
-            continue;
-        }
-
-        var_types  loadType  = varDsc->lvaArgType();
-        regNumber  argReg    = varDsc->lvArgReg;
-        getEmitter()->emitIns_R_S(ins_Load(loadType), emitTypeSize(loadType), argReg, varNum, 0);
-
-#if FEATURE_VARARG
-        if (compiler->info.compIsVarArgs && varTypeIsFloating(loadType))
-        {
-            regNumber intArgReg = compiler->getCallArgIntRegister(argReg);
-            instruction ins = ins_CopyFloatToInt(loadType, TYP_LONG);
-            inst_RV_RV(ins, argReg, intArgReg, loadType);
-        }
-#endif //  FEATURE_VARARG
-    }
-
-    // If initReg is one of RBM_CALLEE_TRASH, then it needs to be zero'ed before using.
-    if ((RBM_CALLEE_TRASH & genRegMask(initReg)) != 0)
-    {
-        *pInitRegZeroed = false;
-    }
+    inst_RV(INS_pop, REG_RSI, TYP_REF);
+    inst_RV(INS_pop, REG_RDI, TYP_REF);
 #else //!_TARGET_AMD64_
     NYI("RyuJIT: Emit Profiler Enter callback");
 #endif
