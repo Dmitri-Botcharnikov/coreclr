@@ -11,6 +11,7 @@ extern "C" {
         if (ppv == NULL || rclsid != CLSID_DemoProfiler)
             return E_FAIL;
 
+        PAL_InitializeDLL();
         *ppv = new ClassFactory();
 
         return S_OK;

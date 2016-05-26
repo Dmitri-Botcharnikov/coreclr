@@ -2,17 +2,36 @@ cmake_minimum_required(VERSION 2.8.12.2)
 
 project(CoreProfiler)
 
-add_definitions(-DPAL_STDCPP_COMPAT)
+# add_definitions(-DPAL_STDCPP_COMPAT)
 
-include_directories(${COREPAL_SOURCE_DIR}/inc)
-
-add_library(coreprof
-  SHARED
+set(PROFILER_SOURCES_COMMON
   profiler.cpp
   log.cpp
   classfactory.cpp
-  guids.cpp
   entrypoint.cpp
 )
 
-install(TARGETS coreprof DESTINATION lib)
+add_library_clr(coreprof
+  SHARED
+  ${PROFILER_SOURCES_COMMON}
+)
+
+set(PROFILER_LINK_LIBRARIES
+  corguids
+  utilcodestaticnohost
+  # gcinfo
+)
+
+if(CLR_CMAKE_PLATFORM_UNIX)
+  list(APPEND PROFILER_LINK_LIBRARIES
+    mscorrc_debug
+    coreclrpal
+    palrt
+  )
+endif(CLR_CMAKE_PLATFORM_UNIX)
+
+target_link_libraries(coreprof
+  ${PROFILER_LINK_LIBRARIES}
+)
+
+install_clr(coreprof)
