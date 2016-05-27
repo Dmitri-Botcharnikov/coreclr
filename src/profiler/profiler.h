@@ -1,9 +1,9 @@
-#include <stdlib.h>
-#include <pal_mstypes.h>
-#include <pal.h>
-#include <ntimage.h>
-#include <corhdr.h>
+// #include <stdlib.h>
+// #include <pal_mstypes.h>
+// #include <pal.h>
+// #include <ntimage.h>
 #include <cor.h>
+#include <corhdr.h>
 #include <corprof.h>
 
 class Profiler : public ICorProfilerCallback3

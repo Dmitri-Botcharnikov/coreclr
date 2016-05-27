@@ -1,8 +1,3 @@
-#include <pal_mstypes.h>
-#include <pal.h>
-#include <ntimage.h>
-#include <corhdr.h>
-#include <cor.h>
 #include <unknwn.h>
 
 class ClassFactory : public IClassFactory

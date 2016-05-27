@@ -1,5 +1,6 @@
-#include "log.h"
 #include <stdio.h>
+
+#include "log.h"
 
 void LogProfilerActivity(const char *format, ...)
 {

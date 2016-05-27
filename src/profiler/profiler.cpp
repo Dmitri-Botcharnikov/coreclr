@@ -1,3 +1,5 @@
+#include <corhlpr.h>
+
 #include "profiler.h"
 #include "log.h"
 
