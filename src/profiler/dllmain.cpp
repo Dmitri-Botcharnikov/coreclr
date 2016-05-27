@@ -2,7 +2,7 @@
 #include <new.hpp>
 
 #include "classfactory.h"
-#include "profiler.h"
+#include "profilercallback.h"
 
 //
 // Helpers/Registration
@@ -17,8 +17,8 @@ EXTERN_GUID(CLSID_PROFILER, 0x912E73AF, 0xF51D, 0x4E80, 0x89, 0x4D, 0xF4, 0xE9, 
 const COCLASS_REGISTER g_CoClasses[] =
 {
 //   pClsid           szProgID       pfnCreateObject
-    {&CLSID_PROFILER, PROFILER_GUID, Profiler::CreateObject},
-    {NULL,            NULL,          NULL                  }
+    {&CLSID_PROFILER, PROFILER_GUID, ProfilerCallback::CreateObject},
+    {NULL,            NULL,          NULL                          }
 };
 
 // HINSTANCE hInstance : Instance handle
@@ -87,4 +87,9 @@ STDAPI DllGetClassObject( // Return code
     }
 
     return hr;
+}
+
+HINSTANCE GetModuleInst()
+{
+    return g_hInst;
 }

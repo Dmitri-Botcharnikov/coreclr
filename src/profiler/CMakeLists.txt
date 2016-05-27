@@ -5,7 +5,7 @@ project(CoreProfiler)
 # add_definitions(-DPAL_STDCPP_COMPAT)
 
 set(PROFILER_SOURCES_COMMON
-  profiler.cpp
+  profilercallback.cpp
   log.cpp
   classfactory.cpp
   dllmain.cpp

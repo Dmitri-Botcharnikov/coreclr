@@ -1,3 +1,6 @@
+#ifndef __PROFILER_CALLBACK_H__
+#define __PROFILER_CALLBACK_H__
+
 // #include <stdlib.h>
 // #include <pal_mstypes.h>
 // #include <pal.h>
@@ -6,21 +9,44 @@
 #include <corhdr.h>
 #include <corprof.h>
 
-class Profiler;
+class ProfilerCallback;
 
-extern Profiler *g_pCallbackObject; // Global reference to callback object
+extern ProfilerCallback *g_pCallbackObject; // Global reference to callback object
 
-class Profiler : public ICorProfilerCallback3
+struct ProfConfig
+{
+    // OmvUsage usage;
+    // BOOL  bOldFormat;
+    // char  szPath[256];
+    // char  szFileName[256];
+    // BOOL  bDynamic;
+    // BOOL  bStack;
+    // DWORD dwFramesToPrint;
+    // DWORD dwSkipObjects;
+    // char  szClassToMonitor[256];
+    // DWORD dwInitialSetting;
+    // DWORD dwDefaultTimeoutMs;
+};
+
+class ProfilerCallback : public ICorProfilerCallback3
 {
 public:
-
+    //
+    // Instantiate an instance of the callback interface
+    //
     static HRESULT CreateObject(
         REFIID riid,
         void **ppInterface);
 
-    Profiler();
+    ProfilerCallback();
 
-    virtual ~Profiler();
+    virtual ~ProfilerCallback();
+
+    HRESULT Init(ProfConfig * pProfConfig);
+
+    //
+    // IUnknown methods
+    //
 
     virtual HRESULT STDMETHODCALLTYPE QueryInterface(
         REFIID riid,
@@ -30,12 +56,20 @@ public:
 
     virtual ULONG STDMETHODCALLTYPE Release(void) override;
 
+    //
+    // STARTUP/SHUTDOWN EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE Initialize(
         IUnknown *pICorProfilerInfoUnk) override;
 
     virtual HRESULT STDMETHODCALLTYPE Shutdown(void) override;
 
     HRESULT DllDetachShutdown();
+
+    //
+    // APPLICATION DOMAIN EVENTS
+    //
 
     virtual HRESULT STDMETHODCALLTYPE AppDomainCreationStarted(
         AppDomainID appDomainId) override;
@@ -51,6 +85,10 @@ public:
         AppDomainID appDomainId,
         HRESULT hrStatus) override;
 
+    //
+    // ASSEMBLY EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE AssemblyLoadStarted(
         AssemblyID assemblyId) override;
 
@@ -64,6 +102,10 @@ public:
     virtual HRESULT STDMETHODCALLTYPE AssemblyUnloadFinished(
         AssemblyID assemblyId,
         HRESULT hrStatus) override;
+
+    //
+    // MODULE EVENTS
+    //
 
     virtual HRESULT STDMETHODCALLTYPE ModuleLoadStarted(
         ModuleID moduleId) override;
@@ -83,6 +125,10 @@ public:
         ModuleID moduleId,
         AssemblyID AssemblyId) override;
 
+    //
+    // CLASS EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE ClassLoadStarted(
         ClassID classId) override;
 
@@ -99,6 +145,10 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE FunctionUnloadStarted(
         FunctionID functionId) override;
+
+    //
+    // JIT EVENTS
+    //
 
     virtual HRESULT STDMETHODCALLTYPE JITCompilationStarted(
         FunctionID functionId,
@@ -125,6 +175,10 @@ public:
         FunctionID calleeId,
         BOOL *pfShouldInline) override;
 
+    //
+    // THREAD EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE ThreadCreated(
         ThreadID threadId) override;
 
@@ -134,6 +188,17 @@ public:
     virtual HRESULT STDMETHODCALLTYPE ThreadAssignedToOSThread(
         ThreadID managedThreadId,
         DWORD osThreadId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ThreadNameChanged(
+        ThreadID threadId,
+        ULONG cchName,
+        _In_reads_opt_(cchName) WCHAR name[]) override;
+
+    //
+    // REMOTING EVENTS
+    //
+
+    // Client-side events
 
     virtual HRESULT STDMETHODCALLTYPE RemotingClientInvocationStarted(void) override;
 
@@ -147,6 +212,8 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE RemotingClientInvocationFinished(void) override;
 
+    // Server-side events
+
     virtual HRESULT STDMETHODCALLTYPE RemotingServerReceivingMessage(
         GUID *pCookie,
         BOOL fIsAsync) override;
@@ -159,6 +226,10 @@ public:
         GUID *pCookie,
         BOOL fIsAsync) override;
 
+    //
+    // TRANSITION EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE UnmanagedToManagedTransition(
         FunctionID functionId,
         COR_PRF_TRANSITION_REASON reason) override;
@@ -166,6 +237,10 @@ public:
     virtual HRESULT STDMETHODCALLTYPE ManagedToUnmanagedTransition(
         FunctionID functionId,
         COR_PRF_TRANSITION_REASON reason) override;
+
+    //
+    // RUNTIME SUSPENSION EVENTS
+    //
 
     virtual HRESULT STDMETHODCALLTYPE RuntimeSuspendStarted(
         COR_PRF_SUSPEND_REASON suspendReason) override;
@@ -183,6 +258,10 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE RuntimeThreadResumed(
         ThreadID threadId) override;
+
+    //
+    // GC EVENTS
+    //
 
     virtual HRESULT STDMETHODCALLTYPE MovedReferences(
         ULONG cMovedObjectIDRanges,
@@ -208,63 +287,6 @@ public:
     virtual HRESULT STDMETHODCALLTYPE RootReferences(
         ULONG cRootRefs,
         ObjectID rootRefIds[]) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionThrown(
-        ObjectID thrownObjectId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFunctionEnter(
-        FunctionID functionId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFunctionLeave(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFilterEnter(
-        FunctionID functionId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFilterLeave(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchCatcherFound(
-        FunctionID functionId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionOSHandlerEnter(
-        UINT_PTR __unused) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionOSHandlerLeave(
-        UINT_PTR __unused) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionEnter(
-        FunctionID functionId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionLeave(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFinallyEnter(
-        FunctionID functionId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFinallyLeave(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionCatcherEnter(
-        FunctionID functionId, ObjectID objectId) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionCatcherLeave(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE COMClassicVTableCreated(
-        ClassID wrappedClassId,
-        REFGUID implementedIID,
-        void *pVTable,
-        ULONG cSlots) override;
-
-    virtual HRESULT STDMETHODCALLTYPE COMClassicVTableDestroyed(
-        ClassID wrappedClassId,
-        REFGUID implementedIID,
-        void *pVTable) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherFound(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherExecute(void) override;
-
-    virtual HRESULT STDMETHODCALLTYPE ThreadNameChanged(
-        ThreadID threadId,
-        ULONG cchName,
-        _In_reads_opt_(cchName) WCHAR name[]) override;
 
     virtual HRESULT STDMETHODCALLTYPE GarbageCollectionStarted(
         int cGenerations,
@@ -296,6 +318,72 @@ public:
     virtual HRESULT STDMETHODCALLTYPE HandleDestroyed(
         GCHandleID handleId) override;
 
+    //
+    // EXCEPTION EVENTS
+    //
+
+    // Exception creation
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionThrown(
+        ObjectID thrownObjectId) override;
+
+    // Search phase
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFunctionEnter(
+        FunctionID functionId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFunctionLeave(void) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFilterEnter(
+        FunctionID functionId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchFilterLeave(void) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionSearchCatcherFound(
+        FunctionID functionId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionOSHandlerEnter(
+        UINT_PTR __unused) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionOSHandlerLeave(
+        UINT_PTR __unused) override;
+
+    // Unwind phase
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionEnter(
+        FunctionID functionId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionLeave(void) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFinallyEnter(
+        FunctionID functionId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionUnwindFinallyLeave(void) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionCatcherEnter(
+        FunctionID functionId, ObjectID objectId) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionCatcherLeave(void) override;
+
+    //
+    // COM CLASSIC WRAPPER
+    //
+
+    virtual HRESULT STDMETHODCALLTYPE COMClassicVTableCreated(
+        ClassID wrappedClassId,
+        REFGUID implementedIID,
+        void *pVTable,
+        ULONG cSlots) override;
+
+    virtual HRESULT STDMETHODCALLTYPE COMClassicVTableDestroyed(
+        ClassID wrappedClassId,
+        REFGUID implementedIID,
+        void *pVTable) override;
+
+    //
+    // ATTACH EVENTS
+    //
+
     virtual HRESULT STDMETHODCALLTYPE InitializeForAttach(
         IUnknown *pCorProfilerInfoUnk,
         void *pvClientData,
@@ -305,7 +393,17 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE ProfilerDetachSucceeded(void) override;
 
+    //
+    // DEPRECATED. These callbacks are no longer delivered
+    //
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherFound(void) override;
+
+    virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherExecute(void) override;
+
 private:
     LONG m_refCount;
     DWORD m_dwShutdown;
 };
+
+#endif // __PROFILER_CALLBACK_H__

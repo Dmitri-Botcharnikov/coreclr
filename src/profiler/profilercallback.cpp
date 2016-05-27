@@ -1,21 +1,54 @@
 #include <corhlpr.h>
 
-#include "profiler.h"
+#include "profilercallback.h"
 #include "log.h"
 
-Profiler *g_pCallbackObject; // Global reference to callback object
+ProfilerCallback *g_pCallbackObject; // Global reference to callback object
 
-Profiler::Profiler()
+HRESULT ProfilerCallback::CreateObject(
+    REFIID riid,
+    void **ppInterface)
+{
+    HRESULT hr = E_NOINTERFACE;
+
+    *ppInterface = NULL;
+    if (   (riid == IID_IUnknown)
+        || (riid == IID_ICorProfilerCallback)
+        || (riid == IID_ICorProfilerCallback2)
+        || (riid == IID_ICorProfilerCallback3))
+    {
+        ProfilerCallback *pProfiler;
+
+        pProfiler = new (nothrow) ProfilerCallback();
+        if (!pProfiler)
+            return E_OUTOFMEMORY;
+
+        hr = S_OK;
+
+        pProfiler->AddRef();
+
+        *ppInterface = static_cast<ICorProfilerCallback *>(pProfiler);
+    }
+
+    return hr;
+}
+
+ProfilerCallback::ProfilerCallback()
     : m_refCount(1)
     , m_dwShutdown(0)
 {
 }
 
-Profiler::~Profiler()
+ProfilerCallback::~ProfilerCallback()
 {
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::QueryInterface(
+HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
+{
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::QueryInterface(
     REFIID riid,
     void **ppvObject)
 {
@@ -34,14 +67,14 @@ HRESULT STDMETHODCALLTYPE Profiler::QueryInterface(
     return E_NOINTERFACE;
 }
 
-ULONG STDMETHODCALLTYPE Profiler::AddRef(void)
+ULONG STDMETHODCALLTYPE ProfilerCallback::AddRef(void)
 {
-    return __sync_fetch_and_add(&m_refCount, 1) + 1;
+    return InterlockedIncrement(&m_refCount);
 }
 
-ULONG STDMETHODCALLTYPE Profiler::Release(void)
+ULONG STDMETHODCALLTYPE ProfilerCallback::Release(void)
 {
-    LONG result = __sync_fetch_and_sub(&m_refCount, 1) - 1;
+    LONG result = InterlockedDecrement(&m_refCount);
     if (result == 0)
     {
         delete this;
@@ -50,35 +83,7 @@ ULONG STDMETHODCALLTYPE Profiler::Release(void)
     return result;
 }
 
-HRESULT Profiler::CreateObject(
-    REFIID riid,
-    void **ppInterface)
-{
-    HRESULT hr = E_NOINTERFACE;
-
-    *ppInterface = NULL;
-    if (   (riid == IID_IUnknown)
-        || (riid == IID_ICorProfilerCallback)
-        || (riid == IID_ICorProfilerCallback2)
-        || (riid == IID_ICorProfilerCallback3))
-    {
-        Profiler *pProfiler;
-
-        pProfiler = new (nothrow) Profiler();
-        if (!pProfiler)
-            return E_OUTOFMEMORY;
-
-        hr = S_OK;
-
-        pProfiler->AddRef();
-
-        *ppInterface = static_cast<ICorProfilerCallback *>(pProfiler);
-    }
-
-    return hr;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::Initialize(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
     IUnknown *pICorProfilerInfoUnk)
 {
     LogProfilerActivity("Initialize\n");
@@ -98,14 +103,14 @@ HRESULT STDMETHODCALLTYPE Profiler::Initialize(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::Shutdown(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::Shutdown(void)
 {
     LogProfilerActivity("Shutdown\n");
     m_dwShutdown++;
     return S_OK;
 }
 
-HRESULT Profiler::DllDetachShutdown()
+HRESULT ProfilerCallback::DllDetachShutdown()
 {
     // If no shutdown occurs during DLL_DETACH, release the callback
     // interface pointer. This scenario will more than likely occur
@@ -121,14 +126,14 @@ HRESULT Profiler::DllDetachShutdown()
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AppDomainCreationStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AppDomainCreationStarted(
     AppDomainID appDomainId)
 {
     LogProfilerActivity("AppDomainCreationStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AppDomainCreationFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AppDomainCreationFinished(
     AppDomainID appDomainId,
     HRESULT hrStatus)
 {
@@ -136,14 +141,14 @@ HRESULT STDMETHODCALLTYPE Profiler::AppDomainCreationFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AppDomainShutdownStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AppDomainShutdownStarted(
     AppDomainID appDomainId)
 {
     LogProfilerActivity("AppDomainShutdownStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AppDomainShutdownFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AppDomainShutdownFinished(
     AppDomainID appDomainId,
     HRESULT hrStatus)
 {
@@ -151,14 +156,14 @@ HRESULT STDMETHODCALLTYPE Profiler::AppDomainShutdownFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AssemblyLoadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AssemblyLoadStarted(
     AssemblyID assemblyId)
 {
     LogProfilerActivity("AssemblyLoadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AssemblyLoadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AssemblyLoadFinished(
     AssemblyID assemblyId,
     HRESULT hrStatus)
 {
@@ -166,14 +171,14 @@ HRESULT STDMETHODCALLTYPE Profiler::AssemblyLoadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AssemblyUnloadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AssemblyUnloadStarted(
     AssemblyID assemblyId)
 {
     LogProfilerActivity("AssemblyUnloadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::AssemblyUnloadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::AssemblyUnloadFinished(
     AssemblyID assemblyId,
     HRESULT hrStatus)
 {
@@ -181,14 +186,14 @@ HRESULT STDMETHODCALLTYPE Profiler::AssemblyUnloadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ModuleLoadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleLoadStarted(
     ModuleID moduleId)
 {
     LogProfilerActivity("ModuleLoadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ModuleLoadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleLoadFinished(
     ModuleID moduleId,
     HRESULT hrStatus)
 {
@@ -196,14 +201,14 @@ HRESULT STDMETHODCALLTYPE Profiler::ModuleLoadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ModuleUnloadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleUnloadStarted(
     ModuleID moduleId)
 {
     LogProfilerActivity("ModuleUnloadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ModuleUnloadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleUnloadFinished(
     ModuleID moduleId,
     HRESULT hrStatus)
 {
@@ -211,7 +216,7 @@ HRESULT STDMETHODCALLTYPE Profiler::ModuleUnloadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ModuleAttachedToAssembly(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleAttachedToAssembly(
     ModuleID moduleId,
     AssemblyID AssemblyId)
 {
@@ -219,14 +224,14 @@ HRESULT STDMETHODCALLTYPE Profiler::ModuleAttachedToAssembly(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ClassLoadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ClassLoadStarted(
     ClassID classId)
 {
     LogProfilerActivity("ClassLoadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ClassLoadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ClassLoadFinished(
     ClassID classId,
     HRESULT hrStatus)
 {
@@ -234,14 +239,14 @@ HRESULT STDMETHODCALLTYPE Profiler::ClassLoadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ClassUnloadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ClassUnloadStarted(
     ClassID classId)
 {
     LogProfilerActivity("ClassUnloadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ClassUnloadFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ClassUnloadFinished(
     ClassID classId,
     HRESULT hrStatus)
 {
@@ -249,14 +254,14 @@ HRESULT STDMETHODCALLTYPE Profiler::ClassUnloadFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::FunctionUnloadStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::FunctionUnloadStarted(
     FunctionID functionId)
 {
     LogProfilerActivity("FunctionUnloadStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITCompilationStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationStarted(
     FunctionID functionId,
     BOOL fIsSafeToBlock)
 {
@@ -264,7 +269,7 @@ HRESULT STDMETHODCALLTYPE Profiler::JITCompilationStarted(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITCompilationFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
     FunctionID functionId,
     HRESULT hrStatus, BOOL fIsSafeToBlock)
 {
@@ -272,7 +277,7 @@ HRESULT STDMETHODCALLTYPE Profiler::JITCompilationFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITCachedFunctionSearchStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchStarted(
     FunctionID functionId,
     BOOL *pbUseCachedFunction)
 {
@@ -280,7 +285,7 @@ HRESULT STDMETHODCALLTYPE Profiler::JITCachedFunctionSearchStarted(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITCachedFunctionSearchFinished(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchFinished(
     FunctionID functionId,
     COR_PRF_JIT_CACHE result)
 {
@@ -288,14 +293,14 @@ HRESULT STDMETHODCALLTYPE Profiler::JITCachedFunctionSearchFinished(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITFunctionPitched(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITFunctionPitched(
     FunctionID functionId)
 {
     LogProfilerActivity("JITFunctionPitched\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::JITInlining(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::JITInlining(
     FunctionID callerId,
     FunctionID calleeId,
     BOOL *pfShouldInline)
@@ -304,21 +309,21 @@ HRESULT STDMETHODCALLTYPE Profiler::JITInlining(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ThreadCreated(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadCreated(
     ThreadID threadId)
 {
     LogProfilerActivity("ThreadCreated\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ThreadDestroyed(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadDestroyed(
     ThreadID threadId)
 {
     LogProfilerActivity("ThreadDestroyed\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ThreadAssignedToOSThread(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadAssignedToOSThread(
     ThreadID managedThreadId,
     DWORD osThreadId)
 {
@@ -326,13 +331,22 @@ HRESULT STDMETHODCALLTYPE Profiler::ThreadAssignedToOSThread(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingClientInvocationStarted(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadNameChanged(
+    ThreadID threadId,
+    ULONG cchName,
+    _In_reads_opt_(cchName) WCHAR name[])
+{
+    LogProfilerActivity("ThreadNameChanged\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingClientInvocationStarted(void)
 {
     LogProfilerActivity("RemotingClientInvocationStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingClientSendingMessage(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingClientSendingMessage(
     GUID *pCookie,
     BOOL fIsAsync)
 {
@@ -340,7 +354,7 @@ HRESULT STDMETHODCALLTYPE Profiler::RemotingClientSendingMessage(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingClientReceivingReply(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingClientReceivingReply(
     GUID *pCookie,
     BOOL fIsAsync)
 {
@@ -348,13 +362,13 @@ HRESULT STDMETHODCALLTYPE Profiler::RemotingClientReceivingReply(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingClientInvocationFinished(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingClientInvocationFinished(void)
 {
     LogProfilerActivity("RemotingClientInvocationFinished\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingServerReceivingMessage(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingServerReceivingMessage(
     GUID *pCookie,
     BOOL fIsAsync)
 {
@@ -362,19 +376,19 @@ HRESULT STDMETHODCALLTYPE Profiler::RemotingServerReceivingMessage(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingServerInvocationStarted(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingServerInvocationStarted(void)
 {
     LogProfilerActivity("RemotingServerInvocationStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingServerInvocationReturned(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingServerInvocationReturned(void)
 {
     LogProfilerActivity("RemotingServerInvocationReturned\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RemotingServerSendingReply(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RemotingServerSendingReply(
     GUID *pCookie,
     BOOL fIsAsync)
 {
@@ -382,7 +396,7 @@ HRESULT STDMETHODCALLTYPE Profiler::RemotingServerSendingReply(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::UnmanagedToManagedTransition(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::UnmanagedToManagedTransition(
     FunctionID functionId,
     COR_PRF_TRANSITION_REASON reason)
 {
@@ -390,7 +404,7 @@ HRESULT STDMETHODCALLTYPE Profiler::UnmanagedToManagedTransition(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ManagedToUnmanagedTransition(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ManagedToUnmanagedTransition(
     FunctionID functionId,
     COR_PRF_TRANSITION_REASON reason)
 {
@@ -398,52 +412,52 @@ HRESULT STDMETHODCALLTYPE Profiler::ManagedToUnmanagedTransition(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeSuspendStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeSuspendStarted(
     COR_PRF_SUSPEND_REASON suspendReason)
 {
     LogProfilerActivity("RuntimeSuspendStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeSuspendFinished(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeSuspendFinished(void)
 {
     LogProfilerActivity("RuntimeSuspendFinished\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeSuspendAborted(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeSuspendAborted(void)
 {
     LogProfilerActivity("RuntimeSuspendAborted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeResumeStarted(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeResumeStarted(void)
 {
     LogProfilerActivity("RuntimeResumeStarted\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeResumeFinished(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeResumeFinished(void)
 {
     LogProfilerActivity("RuntimeResumeFinished\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeThreadSuspended(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeThreadSuspended(
     ThreadID threadId)
 {
     LogProfilerActivity("RuntimeThreadSuspended\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RuntimeThreadResumed(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeThreadResumed(
     ThreadID threadId)
 {
     LogProfilerActivity("RuntimeThreadResumed\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::MovedReferences(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::MovedReferences(
     ULONG cMovedObjectIDRanges,
     ObjectID oldObjectIDRangeStart[],
     ObjectID newObjectIDRangeStart[],
@@ -453,7 +467,7 @@ HRESULT STDMETHODCALLTYPE Profiler::MovedReferences(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ObjectAllocated(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectAllocated(
     ObjectID objectId,
     ClassID classId)
 {
@@ -461,7 +475,7 @@ HRESULT STDMETHODCALLTYPE Profiler::ObjectAllocated(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ObjectsAllocatedByClass(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectsAllocatedByClass(
     ULONG cClassCount,
     ClassID classIds[],
     ULONG cObjects[])
@@ -470,7 +484,7 @@ HRESULT STDMETHODCALLTYPE Profiler::ObjectsAllocatedByClass(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ObjectReferences(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectReferences(
     ObjectID objectId,
     ClassID classId,
     ULONG cObjectRefs,
@@ -480,7 +494,7 @@ HRESULT STDMETHODCALLTYPE Profiler::ObjectReferences(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RootReferences(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RootReferences(
     ULONG cRootRefs,
     ObjectID rootRefIds[])
 {
@@ -488,140 +502,8 @@ HRESULT STDMETHODCALLTYPE Profiler::RootReferences(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionThrown(
-    ObjectID thrownObjectId)
-{
-    LogProfilerActivity("ExceptionThrown\n");
-    return S_OK;
-}
 
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionSearchFunctionEnter(
-    FunctionID functionId)
-{
-    LogProfilerActivity("ExceptionSearchFunctionEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionSearchFunctionLeave(void)
-{
-    LogProfilerActivity("ExceptionSearchFunctionLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionSearchFilterEnter(
-    FunctionID functionId)
-{
-    LogProfilerActivity("ExceptionSearchFilterEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionSearchFilterLeave(void)
-{
-    LogProfilerActivity("ExceptionSearchFilterLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionSearchCatcherFound(
-    FunctionID functionId)
-{
-    LogProfilerActivity("ExceptionSearchCatcherFound\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionOSHandlerEnter(
-    UINT_PTR __unused)
-{
-    LogProfilerActivity("ExceptionOSHandlerEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionOSHandlerLeave(
-    UINT_PTR __unused)
-{
-    LogProfilerActivity("ExceptionOSHandlerLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionUnwindFunctionEnter(
-    FunctionID functionId)
-{
-    LogProfilerActivity("ExceptionUnwindFunctionEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionUnwindFunctionLeave(void)
-{
-    LogProfilerActivity("ExceptionUnwindFunctionLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionUnwindFinallyEnter(
-    FunctionID functionId)
-{
-    LogProfilerActivity("ExceptionUnwindFinallyEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionUnwindFinallyLeave(void)
-{
-    LogProfilerActivity("ExceptionUnwindFinallyLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionCatcherEnter(
-    FunctionID functionId,
-    ObjectID objectId)
-{
-    LogProfilerActivity("ExceptionCatcherEnter\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionCatcherLeave(void)
-{
-    LogProfilerActivity("ExceptionCatcherLeave\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::COMClassicVTableCreated(
-    ClassID wrappedClassId,
-    REFGUID implementedIID,
-    void *pVTable, ULONG cSlots)
-{
-    LogProfilerActivity("COMClassicVTableCreated\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::COMClassicVTableDestroyed(
-    ClassID wrappedClassId,
-    REFGUID implementedIID,
-    void *pVTable)
-{
-    LogProfilerActivity("COMClassicVTableDestroyed\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionCLRCatcherFound(void)
-{
-    LogProfilerActivity("ExceptionCLRCatcherFound\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ExceptionCLRCatcherExecute(void)
-{
-    LogProfilerActivity("ExceptionCLRCatcherExecute\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::ThreadNameChanged(
-    ThreadID threadId,
-    ULONG cchName,
-    _In_reads_opt_(cchName) WCHAR name[])
-{
-    LogProfilerActivity("ThreadNameChanged\n");
-    return S_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Profiler::GarbageCollectionStarted(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::GarbageCollectionStarted(
     int cGenerations,
     BOOL generationCollected[],
     COR_PRF_GC_REASON reason)
@@ -630,7 +512,7 @@ HRESULT STDMETHODCALLTYPE Profiler::GarbageCollectionStarted(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::SurvivingReferences(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::SurvivingReferences(
     ULONG cSurvivingObjectIDRanges,
     ObjectID objectIDRangeStart[],
     ULONG cObjectIDRangeLength[])
@@ -639,13 +521,13 @@ HRESULT STDMETHODCALLTYPE Profiler::SurvivingReferences(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::GarbageCollectionFinished(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::GarbageCollectionFinished(void)
 {
     LogProfilerActivity("GarbageCollectionFinished\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::FinalizeableObjectQueued(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::FinalizeableObjectQueued(
     DWORD finalizerFlags,
     ObjectID objectID)
 {
@@ -653,7 +535,7 @@ HRESULT STDMETHODCALLTYPE Profiler::FinalizeableObjectQueued(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::RootReferences2(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::RootReferences2(
     ULONG cRootRefs,
     ObjectID rootRefIds[],
     COR_PRF_GC_ROOT_KIND rootKinds[],
@@ -664,7 +546,7 @@ HRESULT STDMETHODCALLTYPE Profiler::RootReferences2(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::HandleCreated(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::HandleCreated(
     GCHandleID handleId,
     ObjectID initialObjectId)
 {
@@ -672,14 +554,126 @@ HRESULT STDMETHODCALLTYPE Profiler::HandleCreated(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::HandleDestroyed(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::HandleDestroyed(
     GCHandleID handleId)
 {
     LogProfilerActivity("HandleDestroyed\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::InitializeForAttach(
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionThrown(
+    ObjectID thrownObjectId)
+{
+    LogProfilerActivity("ExceptionThrown\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionSearchFunctionEnter(
+    FunctionID functionId)
+{
+    LogProfilerActivity("ExceptionSearchFunctionEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionSearchFunctionLeave(void)
+{
+    LogProfilerActivity("ExceptionSearchFunctionLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionSearchFilterEnter(
+    FunctionID functionId)
+{
+    LogProfilerActivity("ExceptionSearchFilterEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionSearchFilterLeave(void)
+{
+    LogProfilerActivity("ExceptionSearchFilterLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionSearchCatcherFound(
+    FunctionID functionId)
+{
+    LogProfilerActivity("ExceptionSearchCatcherFound\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionOSHandlerEnter(
+    UINT_PTR __unused)
+{
+    LogProfilerActivity("ExceptionOSHandlerEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionOSHandlerLeave(
+    UINT_PTR __unused)
+{
+    LogProfilerActivity("ExceptionOSHandlerLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFunctionEnter(
+    FunctionID functionId)
+{
+    LogProfilerActivity("ExceptionUnwindFunctionEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFunctionLeave(void)
+{
+    LogProfilerActivity("ExceptionUnwindFunctionLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFinallyEnter(
+    FunctionID functionId)
+{
+    LogProfilerActivity("ExceptionUnwindFinallyEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFinallyLeave(void)
+{
+    LogProfilerActivity("ExceptionUnwindFinallyLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCatcherEnter(
+    FunctionID functionId,
+    ObjectID objectId)
+{
+    LogProfilerActivity("ExceptionCatcherEnter\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCatcherLeave(void)
+{
+    LogProfilerActivity("ExceptionCatcherLeave\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::COMClassicVTableCreated(
+    ClassID wrappedClassId,
+    REFGUID implementedIID,
+    void *pVTable, ULONG cSlots)
+{
+    LogProfilerActivity("COMClassicVTableCreated\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::COMClassicVTableDestroyed(
+    ClassID wrappedClassId,
+    REFGUID implementedIID,
+    void *pVTable)
+{
+    LogProfilerActivity("COMClassicVTableDestroyed\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::InitializeForAttach(
     IUnknown *pCorProfilerInfoUnk,
     void *pvClientData,
     UINT cbClientData)
@@ -688,14 +682,26 @@ HRESULT STDMETHODCALLTYPE Profiler::InitializeForAttach(
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ProfilerAttachComplete(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ProfilerAttachComplete(void)
 {
     LogProfilerActivity("ProfilerAttachComplete\n");
     return S_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Profiler::ProfilerDetachSucceeded(void)
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ProfilerDetachSucceeded(void)
 {
     LogProfilerActivity("ProfilerDetachSucceeded\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCLRCatcherFound(void)
+{
+    LogProfilerActivity("ExceptionCLRCatcherFound\n");
+    return S_OK;
+}
+
+HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCLRCatcherExecute(void)
+{
+    LogProfilerActivity("ExceptionCLRCatcherExecute\n");
     return S_OK;
 }
