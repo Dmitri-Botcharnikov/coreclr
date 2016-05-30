@@ -8,15 +8,6 @@
 #define InitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount) \
     InitializeCriticalSectionEx(lpCriticalSection, dwSpinCount, 0)
 
-DWORD __stdcall ThreadStub( void *pObject )
-{
-    ((ProfilerCallback *)pObject)->_ThreadStubWrapper();
-
-    return 0;
-
-}
-
-CRITICAL_SECTION g_criticalSection;
 ProfilerCallback *g_pCallbackObject; // Global reference to callback object
 
 int tlsIndex;
@@ -70,7 +61,6 @@ ProfilerCallback::ProfilerCallback()
     , m_bTrackingCalls(FALSE)
     , m_bIsTrackingStackTrace(FALSE)
     , m_oldFormat(FALSE)
-    , m_dwSentinelHandle(SENTINEL_HANDLE)
 {
 }
 
@@ -80,8 +70,6 @@ ProfilerCallback::~ProfilerCallback()
     {
         return;
     }
-
-    _ShutdownAllThreads();
 
     if ( m_path != NULL )
     {
@@ -101,23 +89,7 @@ ProfilerCallback::~ProfilerCallback()
         m_stream = NULL;
     }
 
-    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
-    {
-        if ( m_NamedEvents[i] != NULL )
-        {
-            delete[] m_NamedEvents[i];
-            m_NamedEvents[i] = NULL;
-        }
-
-        if ( m_CallbackNamedEvents[i] != NULL )
-        {
-            delete[] m_CallbackNamedEvents[i];
-            m_CallbackNamedEvents[i] = NULL;
-        }
-    }
-
     DeleteCriticalSection( &m_criticalSection );
-    DeleteCriticalSection( &g_criticalSection );
     g_pCallbackObject = NULL;
 }
 
@@ -136,8 +108,6 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
 
     if (!InitializeCriticalSectionAndSpinCount( &m_criticalSection, 10000 ))
         hr = E_FAIL;
-    if (!InitializeCriticalSectionAndSpinCount( &g_criticalSection, 10000 ))
-        hr = E_FAIL;
     g_pCallbackObject = this;
 
     //
@@ -145,12 +115,6 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
     //
     m_dwProcessId = GetCurrentProcessId();
     sprintf_s( m_logFileName, ARRAY_LEN(m_logFileName), "pipe_%d.log", m_dwProcessId );
-
-    //
-    // set the event and callback names
-    //
-    if (!SUCCEEDED(_InitializeNamesForEventsAndCallbacks()))
-        hr = E_FAIL;
 
     if ( SUCCEEDED(hr) )
     {
@@ -303,10 +267,6 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
         Failure( "CLRProfiler initialization FAILED" );
         return hr;
     }
-
-    hr = _InitializeThreadsAndEvents();
-    if ( FAILED( hr ) )
-        Failure( "Unable to initialize the threads and handles, No profiling" );
 
     Sleep(100); // Give the threads a chance to read any signals that are already set.
 
@@ -916,210 +876,6 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCLRCatcherExecute(void)
     return S_OK;
 }
 
-void ProfilerCallback::_ThreadStubWrapper()
-{
-    //
-    // loop and listen for a ForceGC event
-    //
-    while( TRUE )
-    {
-        DWORD dwResult;
-
-
-        //
-        // wait until someone signals an event from the GUI or the profiler
-        //
-
-        // m_dwSentinelHandle will either be the count of the m_hArray (i.e., SENTINEL_HANDLE),
-        // or less if there are events we don't need to wait on (such as the detach event when
-        // profiling CLR V2).
-        _ASSERT_((0 <= m_dwSentinelHandle) && (m_dwSentinelHandle <= SENTINEL_HANDLE));
-        dwResult = WaitForMultipleObjects(m_dwSentinelHandle, m_hArray, FALSE, INFINITE );
-        if ( dwResult >= WAIT_OBJECT_0 && dwResult < WAIT_OBJECT_0 + m_dwSentinelHandle)
-        {
-            ///////////////////////////////////////////////////////////////////////////
-            Synchronize guard( g_criticalSection );
-            ///////////////////////////////////////////////////////////////////////////
-
-            //
-            // reset the event
-            //
-            ObjHandles type = (ObjHandles)(dwResult - WAIT_OBJECT_0);
-
-            ResetEvent( m_hArray[type] );
-
-            //
-            // FALSE: indicates a ForceGC event arriving from the GUI
-            // TRUE: indicates that the thread has to terminate
-            // in both cases you need to send to the GUI an event to let it know
-            // what the deal is
-            //
-            if ( m_bShutdown == FALSE )
-            {
-                //
-                // what type do you have ?
-                //
-                switch( type )
-                {
-                    case GC_HANDLE:
-                        //
-                        // force the GC and do not worry about the result
-                        //
-                        if ( m_pProfilerInfo != NULL )
-                        {
-                            // dump the GC info on the next GC
-                            m_bDumpGCInfo = TRUE;
-                            m_pProfilerInfo->ForceGC();
-                        }
-                        break;
-
-                    case TRIGGER_GC_HANDLE:
-                        //
-                        // force the GC and do not worry about the result
-                        //
-                        if ( m_pProfilerInfo != NULL )
-                        {
-                            m_pProfilerInfo->ForceGC();
-                        }
-                        break;
-
-                    case OBJ_HANDLE:
-                        //
-                        // you need to update the set event mask, given the previous state
-                        //
-                        if (m_bAttachLoaded)
-                        {
-                            TEXT_OUTLN( "Object allocation callbacks are not supported for attach-loaded profilers" );
-                        }
-
-                        if ( (m_pProfilerInfo != NULL) && !m_bAttachLoaded )
-                        {
-                            if ( m_bTrackingObjects == FALSE )
-                            {
-                                // Turning object stuff on
-                                m_dwEventMask = m_dwEventMask | (DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
-                            }
-                            else
-                            {
-                                // Turning object stuff off
-                                m_dwEventMask = m_dwEventMask & ~(DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
-                            }
-
-                            //
-                            // revert the bool flag and set the bit
-                            //
-                            m_bTrackingObjects = !m_bTrackingObjects;
-                            m_pProfilerInfo->SetEventMask( m_dwEventMask );
-//                          printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
-
-                            // flush the log file
-                            fflush(m_stream);
-
-                        }
-                        break;
-
-                    case CALL_HANDLE:
-                        {
-                            // turn off or on the logging by reversing the previous option
-                            if (m_bTrackingCalls)
-                            {
-                                // turn off
-                                m_dwMode = m_dwMode & ~(DWORD)TRACE;
-                            }
-                            else
-                            {
-                                // turn on
-                                m_dwMode = m_dwMode | (DWORD)TRACE;
-                            }
-                            m_bTrackingCalls = !m_bTrackingCalls;
-//                          printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
-
-                            // flush the log file
-                            fflush(m_stream);
-                        }
-                        break;
-
-                    default:
-                        _ASSERT_( !"Valid Option" );
-                }
-
-                // notify the GUI, if the request was for GC notify later
-                if ( type != GC_HANDLE )
-                    SetEvent( m_hArrayCallbacks[type] );
-            }
-            else
-            {
-                //
-                // Terminate
-                //
-
-                // notify the GUI
-                SetEvent( m_hArrayCallbacks[type] );
-                break;
-            }
-
-        }
-        else
-        {
-            Failure( " WaitForSingleObject TimedOut " );
-            break;
-        }
-    }
-}
-
-void ProfilerCallback::_ShutdownAllThreads()
-{
-    if (m_bShutdown)
-    {
-        return;
-    }
-
-    //
-    // mark that we are shutting down
-    //
-    m_bShutdown = TRUE;
-
-    //
-    // look for the named events and reset them if they are set
-    // notify the GUI and signal to the threads to shutdown
-    //
-    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
-    {
-        SetEvent( m_hArray[i] );
-    }
-
-    //
-    // wait until you receive the autoreset event from the threads
-    // that they have shutdown successfully
-    //
-    DWORD waitResult = WaitForSingleObject(m_hThread,              // thread handle
-                                           INFINITE);        // wait for ever
-
-    if ( waitResult == WAIT_FAILED )
-        LogToAny( "Error While Shutting Down Helper Threads: 0x%08x\n", GetLastError() );
-
-
-    //
-    // loop through and close all the handles, we are done !
-    //
-    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
-    {
-        if ( CloseHandle( m_hArray[i] ) == FALSE )
-            LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
-        m_hArray[i] = NULL;
-
-
-        if ( CloseHandle( m_hArrayCallbacks[i] ) == FALSE )
-            LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
-        m_hArrayCallbacks[i] = NULL;
-
-    }
-    if ( CloseHandle( m_hThread ) == FALSE )
-        LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
-    m_hThread = NULL;
-
-}
-
 void ProfilerCallback::_GetProfConfigFromEnvironment(ProfConfig * pProfConfig)
 {
     char buffer[2*MAX_LENGTH];
@@ -1396,117 +1152,4 @@ void ProfilerCallback::LogToAny( const char *format, ... )
     va_list args;
     va_start( args, format );
     vfprintf( m_stream, format, args );
-}
-
-HRESULT ProfilerCallback::_InitializeThreadsAndEvents()
-{
-    HRESULT hr = S_OK;
-
-    //
-    // GC and Dynamic Object triggering
-    //  Step 1. set up the IPC event
-    //  Step 2. set up the IPC callback event
-    //  Step 3. set up the thread
-    //
-    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
-    {
-
-        // Step 1
-        m_hArray[i] = OpenEvent( EVENT_ALL_ACCESS,  // access
-                                 FALSE,             // do not inherit
-                                 m_NamedEvents[i] ); // event name
-        if ( m_hArray[i] == NULL )
-        {
-            if (!m_bAttachLoaded && (i != TRIGGER_GC_HANDLE))
-                TEXT_OUTLN( "WARNING: OpenEvent() FAILED Will Attempt CreateEvent()" )
-
-            m_hArray[i] = CreateEvent( NULL,   // Not inherited
-                                       TRUE,   // manual reset type
-                                       FALSE,  // initial signaling state
-                                       m_NamedEvents[i] ); // event name
-            if ( m_hArray[i] == NULL )
-            {
-                TEXT_OUTLN( "CreateEvent() Attempt FAILED" )
-                hr = E_FAIL;
-                break;
-            }
-        }
-
-        // Step 2
-        m_hArrayCallbacks[i] = OpenEvent( EVENT_ALL_ACCESS,    // access
-                                          FALSE,               // do not inherit
-                                          m_CallbackNamedEvents[i] ); // event name
-        if ( m_hArrayCallbacks[i] == NULL )
-        {
-            if (!m_bAttachLoaded && (i != TRIGGER_GC_HANDLE))
-                TEXT_OUTLN( "WARNING: OpenEvent() FAILED Will Attempt CreateEvent()" )
-
-            m_hArrayCallbacks[i] = CreateEvent( NULL,                     // Not inherited
-                                                TRUE,                     // manual reset type
-                                                FALSE,                    // initial signaling state
-                                                m_CallbackNamedEvents[i] ); // event name
-            if ( m_hArrayCallbacks[i] == NULL )
-            {
-                TEXT_OUTLN( "CreateEvent() Attempt FAILED" )
-                hr = E_FAIL;
-                break;
-            }
-        }
-    }
-
-    // Step 3
-    m_hThread = ::CreateThread( NULL,                                       // security descriptor, NULL is not inherited
-                                0,                                          // stack size
-                                (LPTHREAD_START_ROUTINE) ThreadStub,        // start function pointer
-                                (void *) this,                              // parameters for the function
-                                THREAD_PRIORITY_NORMAL,                     // priority
-                                &m_dwWin32ThreadID );                       // Win32threadID
-    if ( m_hThread == NULL )
-    {
-        hr = E_FAIL;
-        TEXT_OUTLN( "ERROR: CreateThread() FAILED" )
-    }
-
-    m_bInitialized = TRUE;
-
-    return hr;
-}
-
-HRESULT ProfilerCallback::_InitializeNamesForEventsAndCallbacks()
-{
-    HRESULT hr = S_OK;
-
-    for ( DWORD i=GC_HANDLE; ( (i<m_dwSentinelHandle) && SUCCEEDED(hr) ); i++ )
-    {
-        //
-        // initialize
-        //
-        m_NamedEvents[i] = NULL;
-        m_CallbackNamedEvents[i] = NULL;
-
-
-        //
-        // allocate space
-        //
-        SIZE_T namedEventLen = wcslen(NamedEvents[i]) + 1 + 9;
-        SIZE_T callbackNamedEventLen = wcslen(CallbackNamedEvents[i])+1+9;
-        m_NamedEvents[i] = new WCHAR[namedEventLen];
-        m_CallbackNamedEvents[i] = new WCHAR[callbackNamedEventLen];
-
-        if ( (m_NamedEvents[i] != NULL) && (m_CallbackNamedEvents[i] != NULL) )
-        {
-            swprintf_s( m_NamedEvents[i], namedEventLen, W("%s_%08x"), NamedEvents[i], m_dwProcessId );
-            swprintf_s( m_CallbackNamedEvents[i], callbackNamedEventLen, W("%s_%08x"), CallbackNamedEvents[i], m_dwProcessId );
-        }
-        else
-            hr = E_FAIL;
-    }
-
-    //
-    //  report the allocation error
-    //
-    if ( FAILED( hr ) )
-        Failure( "ERROR: Allocation Failure" );
-
-    return hr;
 }

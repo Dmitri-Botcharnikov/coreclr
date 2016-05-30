@@ -16,27 +16,6 @@ class ProfilerCallback;
 extern ProfilerCallback *g_pCallbackObject; // Global reference to callback object
 
 //
-// arrays with the names of the various events and the IPC related stuff
-//
-static
-LPCWSTR NamedEvents[] = {
-    W("Global\\OMV_ForceGC"),
-    W("Global\\OMV_TriggerObjects"),
-    W("Global\\OMV_Callgraph"),
-    W("Global\\OMV_GC"),
-    W("Global\\OMV_Detach"),
-};
-
-static
-LPCWSTR CallbackNamedEvents[] = {
-    W("Global\\OMV_ForceGC_Completed"),
-    W("Global\\OMV_TriggerObjects_Completed"),
-    W("Global\\OMV_Callgraph_Completed"),
-    W("Global\\OMV_GC_Completed"),
-    W("Global\\OMV_Detach_Completed"),
-};
-
-//
 // IMPORTANT: ProfConfig structure has a counterpart managed structure defined in
 // mainform.cs.  Both must always be in sync.
 // Gather all config info in one place. On startup, this may be read from the
@@ -442,19 +421,10 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherExecute(void) override;
 
-    //
-    // wrapper for the threads
-    //
-    void _ThreadStubWrapper();
-
 private:
-    void _ShutdownAllThreads();
     void _GetProfConfigFromEnvironment(ProfConfig *pProfConfig);
     void _ProcessProfConfig(ProfConfig *pProfConfig);
     void LogToAny( const char *format, ... );
-
-    HRESULT _InitializeThreadsAndEvents();
-    HRESULT _InitializeNamesForEventsAndCallbacks();
 
 private:
     ULONG  m_GCcounter[COR_PRF_GC_GEN_2 + 1];
@@ -485,22 +455,13 @@ private:
     BOOL m_bIsTrackingStackTrace;
     CRITICAL_SECTION m_criticalSection;
     BOOL m_oldFormat;
-    DWORD m_dwSentinelHandle;
 
     // file stuff
     FILE *m_stream;
     DWORD m_firstTickCount;
 
-    // event and thread handles need to be accessed by the threads
-    HANDLE m_hArray[(DWORD)SENTINEL_HANDLE];
-    HANDLE m_hArrayCallbacks[(DWORD)SENTINEL_HANDLE];
-    HANDLE m_hThread;
-    DWORD m_dwWin32ThreadID;
-
     // names for the events and the callbacks
     char m_logFileName[MAX_LENGTH+1];
-    LPWSTR m_NamedEvents[SENTINEL_HANDLE];
-    LPWSTR m_CallbackNamedEvents[SENTINEL_HANDLE];
 };
 
 #endif // __PROFILER_CALLBACK_H__
