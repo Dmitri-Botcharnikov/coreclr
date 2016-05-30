@@ -5,10 +5,13 @@ project(CoreProfiler)
 # add_definitions(-DPAL_STDCPP_COMPAT)
 
 set(PROFILER_SOURCES_COMMON
-  profilercallback.cpp
-  log.cpp
+  avlnode.cpp
+  basehlp.cpp
   classfactory.cpp
   dllmain.cpp
+  log.cpp
+  profilercallback.cpp
+  ProfilerInfo.cpp
 )
 
 add_library_clr(coreprof

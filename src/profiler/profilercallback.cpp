@@ -1,9 +1,25 @@
 #include <corhlpr.h>
 
+#include "basehlp.h"
+
 #include "profilercallback.h"
 #include "log.h"
 
+#define InitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount) \
+    InitializeCriticalSectionEx(lpCriticalSection, dwSpinCount, 0)
+
+DWORD __stdcall ThreadStub( void *pObject )
+{
+    ((ProfilerCallback *)pObject)->_ThreadStubWrapper();
+
+    return 0;
+
+}
+
+CRITICAL_SECTION g_criticalSection;
 ProfilerCallback *g_pCallbackObject; // Global reference to callback object
+
+int tlsIndex;
 
 HRESULT ProfilerCallback::CreateObject(
     REFIID riid,
@@ -34,18 +50,171 @@ HRESULT ProfilerCallback::CreateObject(
 }
 
 ProfilerCallback::ProfilerCallback()
-    : m_refCount(1)
+    : PrfInfo()
+    , m_refCount(1)
     , m_dwShutdown(0)
+    , m_totalClasses(1)
+    , m_totalModules(0)
+    , m_totalFunctions(0)
+    , m_totalObjectsAllocated(0)
+    , m_path(NULL)
+    , m_dwMode(0x3)
+    , m_bInitialized(FALSE)
+    , m_bShutdown(FALSE)
+    , m_bDumpGCInfo(FALSE)
+    , m_dwProcessId(NULL)
+    , m_dwSkipObjects(0)
+    , m_dwFramesToPrint(0xFFFFFFFF)
+    , m_classToMonitor(NULL)
+    , m_bTrackingObjects(FALSE)
+    , m_bTrackingCalls(FALSE)
+    , m_bIsTrackingStackTrace(FALSE)
+    , m_oldFormat(FALSE)
+    , m_dwSentinelHandle(SENTINEL_HANDLE)
 {
 }
 
 ProfilerCallback::~ProfilerCallback()
 {
+    if (!m_bInitialized)
+    {
+        return;
+    }
+
+    _ShutdownAllThreads();
+
+    if ( m_path != NULL )
+    {
+        delete[] m_path;
+        m_path = NULL;
+    }
+
+    if ( m_classToMonitor != NULL )
+    {
+        delete[] m_classToMonitor;
+        m_classToMonitor = NULL;
+    }
+
+    if ( m_stream != NULL )
+    {
+        fclose( m_stream );
+        m_stream = NULL;
+    }
+
+    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
+    {
+        if ( m_NamedEvents[i] != NULL )
+        {
+            delete[] m_NamedEvents[i];
+            m_NamedEvents[i] = NULL;
+        }
+
+        if ( m_CallbackNamedEvents[i] != NULL )
+        {
+            delete[] m_CallbackNamedEvents[i];
+            m_CallbackNamedEvents[i] = NULL;
+        }
+    }
+
+    DeleteCriticalSection( &m_criticalSection );
+    DeleteCriticalSection( &g_criticalSection );
+    g_pCallbackObject = NULL;
 }
 
 HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
 {
-    return S_OK;
+    HRESULT hr = S_OK;
+    memset(&m_GCcounter, 0, sizeof(m_GCcounter));
+    memset(&m_condemnedGeneration, 0, sizeof(m_condemnedGeneration));
+
+    FunctionInfo *pFunctionInfo = NULL;
+
+    //
+    // initializations
+    //
+    m_firstTickCount = GetTickCount();
+
+    if (!InitializeCriticalSectionAndSpinCount( &m_criticalSection, 10000 ))
+        hr = E_FAIL;
+    if (!InitializeCriticalSectionAndSpinCount( &g_criticalSection, 10000 ))
+        hr = E_FAIL;
+    g_pCallbackObject = this;
+
+    //
+    // get the processID and connect to the Pipe of the UI
+    //
+    m_dwProcessId = GetCurrentProcessId();
+    sprintf_s( m_logFileName, ARRAY_LEN(m_logFileName), "pipe_%d.log", m_dwProcessId );
+
+    //
+    // set the event and callback names
+    //
+    if (!SUCCEEDED(_InitializeNamesForEventsAndCallbacks()))
+        hr = E_FAIL;
+
+    if ( SUCCEEDED(hr) )
+    {
+        //
+        // look if the user specified another path to save the output file
+        //
+        if ( pProfConfig->szFileName[0] != '\0' )
+        {
+            // room for buffer chars + '\' + logfilename chars + '\0':
+            const size_t len = strlen(pProfConfig->szFileName) + 1;
+            m_path = new char[len];
+            if ( m_path != NULL )
+                strcpy_s( m_path, len, pProfConfig->szFileName );
+        }
+        else if ( pProfConfig->szPath[0] != '\0' )
+        {
+            // room for buffer chars + '\' + logfilename chars + '\0':
+            const size_t len = strlen(pProfConfig->szPath) + strlen(m_logFileName) + 2;
+            m_path = new char[len];
+            if ( m_path != NULL )
+                sprintf_s( m_path, len, "%s\\%s", pProfConfig->szPath, m_logFileName );
+        }
+
+        //
+        // open the correct file stream fo dump the logging information
+        //
+        m_stream = fopen((m_path != NULL) ? m_path : m_logFileName, "w+");
+        hr = ( m_stream == NULL ) ? E_FAIL : S_OK;
+        if ( SUCCEEDED( hr ) )
+        {
+            setvbuf(m_stream, NULL, _IOFBF, 32768);
+            //
+            // add an entry for the stack trace in case of managed to unamanged transitions
+            //
+            pFunctionInfo = new FunctionInfo( NULL, m_totalFunctions );
+            hr = ( pFunctionInfo == NULL ) ? E_FAIL : S_OK;
+            if ( SUCCEEDED( hr ) )
+            {
+                wcscpy_s( pFunctionInfo->m_functionName, ARRAY_LEN(pFunctionInfo->m_functionName), W("NATIVE FUNCTION") );
+                wcscpy_s( pFunctionInfo->m_functionSig, ARRAY_LEN(pFunctionInfo->m_functionSig), W("( UNKNOWN ARGUMENTS )") );
+
+                m_pFunctionTable->AddEntry( pFunctionInfo, NULL );
+                LogToAny( "f %Id %S %S 0 0\n",
+                          pFunctionInfo->m_internalID,
+                          pFunctionInfo->m_functionName,
+                          pFunctionInfo->m_functionSig );
+
+                m_totalFunctions ++;
+            }
+            else
+                TEXT_OUTLN( "Unable To Allocate Memory For FunctionInfo" )
+        }
+        else
+            TEXT_OUTLN( "Unable to open log file - No log will be produced" )
+    }
+
+    tlsIndex = TlsAlloc();
+    if (tlsIndex < 0)
+        hr = E_FAIL;
+
+    if ( FAILED( hr ) )
+        m_dwEventMask = COR_PRF_MONITOR_NONE;
+
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::QueryInterface(
@@ -88,17 +257,58 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
 {
     LogProfilerActivity("Initialize\n");
 
-    ICorProfilerInfo3 *info;
-    HRESULT hr = pICorProfilerInfoUnk->QueryInterface(IID_ICorProfilerInfo3, (void **) &info);
-    if (hr == S_OK && info != NULL)
-    {
-        info->SetEventMask(COR_PRF_MONITOR_JIT_COMPILATION | COR_PRF_MONITOR_ASSEMBLY_LOADS | COR_PRF_MONITOR_CLASS_LOADS);
+    HRESULT hr;
+    //
+    // define in which mode you will operate
+    //
+    ProfConfig profConfig;
+    _GetProfConfigFromEnvironment(&profConfig);
+    _ProcessProfConfig(&profConfig);
 
-        info->Release();
-        info = NULL;
+    hr = pICorProfilerInfoUnk->QueryInterface(IID_ICorProfilerInfo,
+        (void **)&m_pProfilerInfo);
+    if (FAILED(hr))
+        return hr;
+
+    hr = pICorProfilerInfoUnk->QueryInterface(IID_ICorProfilerInfo2,
+        (void **)&m_pProfilerInfo2);
+    if (FAILED(hr))
+        return hr;
+
+    pICorProfilerInfoUnk->QueryInterface(IID_ICorProfilerInfo3,
+        (void **)&m_pProfilerInfo3);
+
+    hr = m_pProfilerInfo->SetEventMask(m_dwEventMask);
+    if (FAILED(hr))
+    {
+        Failure("SetEventMask for Profiler Test FAILED");
+        return hr;
     }
 
-    g_pCallbackObject = this;
+    // hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3(
+    //     (FunctionEnter3 *)EnterNaked3,
+    //     (FunctionLeave3 *)LeaveNaked3,
+    //     (FunctionTailcall3 *)TailcallNaked3
+    // );
+    //
+    // if (FAILED(hr))
+    // {
+    //     Failure( "ICorProfilerInfo::SetEnterLeaveFunctionHooks() FAILED" );
+    //     return hr;
+    // }
+
+    hr = Init(&profConfig);
+    if ( FAILED( hr ) )
+    {
+        Failure( "CLRProfiler initialization FAILED" );
+        return hr;
+    }
+
+    hr = _InitializeThreadsAndEvents();
+    if ( FAILED( hr ) )
+        Failure( "Unable to initialize the threads and handles, No profiling" );
+
+    Sleep(100); // Give the threads a chance to read any signals that are already set.
 
     return S_OK;
 }
@@ -704,4 +914,599 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCLRCatcherExecute(void)
 {
     LogProfilerActivity("ExceptionCLRCatcherExecute\n");
     return S_OK;
+}
+
+void ProfilerCallback::_ThreadStubWrapper()
+{
+    //
+    // loop and listen for a ForceGC event
+    //
+    while( TRUE )
+    {
+        DWORD dwResult;
+
+
+        //
+        // wait until someone signals an event from the GUI or the profiler
+        //
+
+        // m_dwSentinelHandle will either be the count of the m_hArray (i.e., SENTINEL_HANDLE),
+        // or less if there are events we don't need to wait on (such as the detach event when
+        // profiling CLR V2).
+        _ASSERT_((0 <= m_dwSentinelHandle) && (m_dwSentinelHandle <= SENTINEL_HANDLE));
+        dwResult = WaitForMultipleObjects(m_dwSentinelHandle, m_hArray, FALSE, INFINITE );
+        if ( dwResult >= WAIT_OBJECT_0 && dwResult < WAIT_OBJECT_0 + m_dwSentinelHandle)
+        {
+            ///////////////////////////////////////////////////////////////////////////
+            Synchronize guard( g_criticalSection );
+            ///////////////////////////////////////////////////////////////////////////
+
+            //
+            // reset the event
+            //
+            ObjHandles type = (ObjHandles)(dwResult - WAIT_OBJECT_0);
+
+            ResetEvent( m_hArray[type] );
+
+            //
+            // FALSE: indicates a ForceGC event arriving from the GUI
+            // TRUE: indicates that the thread has to terminate
+            // in both cases you need to send to the GUI an event to let it know
+            // what the deal is
+            //
+            if ( m_bShutdown == FALSE )
+            {
+                //
+                // what type do you have ?
+                //
+                switch( type )
+                {
+                    case GC_HANDLE:
+                        //
+                        // force the GC and do not worry about the result
+                        //
+                        if ( m_pProfilerInfo != NULL )
+                        {
+                            // dump the GC info on the next GC
+                            m_bDumpGCInfo = TRUE;
+                            m_pProfilerInfo->ForceGC();
+                        }
+                        break;
+
+                    case TRIGGER_GC_HANDLE:
+                        //
+                        // force the GC and do not worry about the result
+                        //
+                        if ( m_pProfilerInfo != NULL )
+                        {
+                            m_pProfilerInfo->ForceGC();
+                        }
+                        break;
+
+                    case OBJ_HANDLE:
+                        //
+                        // you need to update the set event mask, given the previous state
+                        //
+                        if (m_bAttachLoaded)
+                        {
+                            TEXT_OUTLN( "Object allocation callbacks are not supported for attach-loaded profilers" );
+                        }
+
+                        if ( (m_pProfilerInfo != NULL) && !m_bAttachLoaded )
+                        {
+                            if ( m_bTrackingObjects == FALSE )
+                            {
+                                // Turning object stuff on
+                                m_dwEventMask = m_dwEventMask | (DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
+                            }
+                            else
+                            {
+                                // Turning object stuff off
+                                m_dwEventMask = m_dwEventMask & ~(DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
+                            }
+
+                            //
+                            // revert the bool flag and set the bit
+                            //
+                            m_bTrackingObjects = !m_bTrackingObjects;
+                            m_pProfilerInfo->SetEventMask( m_dwEventMask );
+//                          printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
+
+                            // flush the log file
+                            fflush(m_stream);
+
+                        }
+                        break;
+
+                    case CALL_HANDLE:
+                        {
+                            // turn off or on the logging by reversing the previous option
+                            if (m_bTrackingCalls)
+                            {
+                                // turn off
+                                m_dwMode = m_dwMode & ~(DWORD)TRACE;
+                            }
+                            else
+                            {
+                                // turn on
+                                m_dwMode = m_dwMode | (DWORD)TRACE;
+                            }
+                            m_bTrackingCalls = !m_bTrackingCalls;
+//                          printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
+
+                            // flush the log file
+                            fflush(m_stream);
+                        }
+                        break;
+
+                    default:
+                        _ASSERT_( !"Valid Option" );
+                }
+
+                // notify the GUI, if the request was for GC notify later
+                if ( type != GC_HANDLE )
+                    SetEvent( m_hArrayCallbacks[type] );
+            }
+            else
+            {
+                //
+                // Terminate
+                //
+
+                // notify the GUI
+                SetEvent( m_hArrayCallbacks[type] );
+                break;
+            }
+
+        }
+        else
+        {
+            Failure( " WaitForSingleObject TimedOut " );
+            break;
+        }
+    }
+}
+
+void ProfilerCallback::_ShutdownAllThreads()
+{
+    if (m_bShutdown)
+    {
+        return;
+    }
+
+    //
+    // mark that we are shutting down
+    //
+    m_bShutdown = TRUE;
+
+    //
+    // look for the named events and reset them if they are set
+    // notify the GUI and signal to the threads to shutdown
+    //
+    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
+    {
+        SetEvent( m_hArray[i] );
+    }
+
+    //
+    // wait until you receive the autoreset event from the threads
+    // that they have shutdown successfully
+    //
+    DWORD waitResult = WaitForSingleObject(m_hThread,              // thread handle
+                                           INFINITE);        // wait for ever
+
+    if ( waitResult == WAIT_FAILED )
+        LogToAny( "Error While Shutting Down Helper Threads: 0x%08x\n", GetLastError() );
+
+
+    //
+    // loop through and close all the handles, we are done !
+    //
+    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
+    {
+        if ( CloseHandle( m_hArray[i] ) == FALSE )
+            LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
+        m_hArray[i] = NULL;
+
+
+        if ( CloseHandle( m_hArrayCallbacks[i] ) == FALSE )
+            LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
+        m_hArrayCallbacks[i] = NULL;
+
+    }
+    if ( CloseHandle( m_hThread ) == FALSE )
+        LogToAny( "Error While Executing CloseHandle: 0x%08x\n", GetLastError() );
+    m_hThread = NULL;
+
+}
+
+void ProfilerCallback::_GetProfConfigFromEnvironment(ProfConfig * pProfConfig)
+{
+    char buffer[2*MAX_LENGTH];
+    memset(pProfConfig, 0, sizeof(*pProfConfig));
+
+    //
+    // read the mode under which the tool is going to operate
+    //
+    buffer[0] = '\0';
+    pProfConfig->usage = OmvUsageInvalid;
+    if ( GetEnvironmentVariableA( OMV_USAGE, buffer, MAX_LENGTH ) > 0 )
+    {
+        if ( _stricmp( "objects", buffer ) == 0 )
+        {
+            pProfConfig->usage = OmvUsageObjects;
+        }
+        else if ( _stricmp( "trace", buffer ) == 0 )
+        {
+            pProfConfig->usage = OmvUsageTrace;
+        }
+        else if ( _stricmp( "both", buffer ) == 0 )
+        {
+            pProfConfig->usage = OmvUsageBoth;
+        }
+        else
+        {
+            pProfConfig->usage = OmvUsageNone;
+        }
+    }
+
+    // retrieve the format
+    buffer[0] = '\0';
+    pProfConfig->bOldFormat = TRUE;
+    if ( GetEnvironmentVariableA(OMV_FORMAT, buffer, MAX_LENGTH) > 0 )
+    {
+        if( _stricmp("v2", buffer) == 0 )
+        {
+            pProfConfig->bOldFormat = FALSE;
+        }
+    }
+
+    //
+    // look if the user specified another path to save the output file
+    //
+    if ( GetEnvironmentVariableA( OMV_PATH, pProfConfig->szPath, ARRAY_LEN(pProfConfig->szPath) ) == 0 )
+    {
+        pProfConfig->szPath[0] = '\0';
+    }
+
+    if ( GetEnvironmentVariableA( OMV_FILENAME, pProfConfig->szFileName, ARRAY_LEN(pProfConfig->szFileName) ) == 0 )
+    {
+        pProfConfig->szFileName[0] = '\0';
+    }
+
+    if ( (pProfConfig->usage == OmvUsageObjects) || (pProfConfig->usage == OmvUsageBoth) )
+    {
+        //
+        // check if the user is going to dynamically enable
+        // object tracking
+        //
+        buffer[0] = '\0';
+        if ( GetEnvironmentVariableA( OMV_DYNAMIC, buffer, MAX_LENGTH ) > 0 )
+        {
+            pProfConfig->bDynamic = TRUE;
+        }
+
+        //
+        // check to see if the user requires stack trace
+        //
+        DWORD value1 = BASEHELPER::FetchEnvironment( OMV_STACK );
+
+        if ( (value1 != 0x0) && (value1 != 0xFFFFFFFF) )
+        {
+            pProfConfig->bStack = TRUE;
+
+            //
+            // decide how many frames to print
+            //
+            pProfConfig->dwFramesToPrint = BASEHELPER::FetchEnvironment( OMV_FRAMENUMBER );
+        }
+
+        //
+        // how many objects you wish to skip
+        //
+        DWORD dwTemp = BASEHELPER::FetchEnvironment( OMV_SKIP );
+        pProfConfig->dwSkipObjects = ( dwTemp != 0xFFFFFFFF ) ? dwTemp : 0;
+
+
+        //
+        // in which class you are interested in
+        //
+        if ( GetEnvironmentVariableA( OMV_CLASS, pProfConfig->szClassToMonitor, ARRAY_LEN(pProfConfig->szClassToMonitor) ) == 0 )
+        {
+            pProfConfig->szClassToMonitor[0] = '\0';
+        }
+
+    }
+
+    //
+    // check to see if there is an inital setting for tracking allocations and calls
+    //
+    pProfConfig->dwInitialSetting = BASEHELPER::FetchEnvironment( OMV_INITIAL_SETTING );
+}
+
+void ProfilerCallback::_ProcessProfConfig(ProfConfig * pProfConfig)
+{
+    //
+    // mask for everything
+    //
+    m_dwEventMask =  (DWORD) COR_PRF_MONITOR_GC
+                   | (DWORD) COR_PRF_MONITOR_THREADS
+                   | (DWORD) COR_PRF_MONITOR_SUSPENDS
+//                   | (DWORD) COR_PRF_MONITOR_ENTERLEAVE
+//                   | (DWORD) COR_PRF_MONITOR_EXCEPTIONS
+                   // | (DWORD) COR_PRF_MONITOR_CLASS_LOADS
+                   | (DWORD) COR_PRF_MONITOR_MODULE_LOADS
+                   | (DWORD) COR_PRF_MONITOR_ASSEMBLY_LOADS
+                   | (DWORD) COR_PRF_MONITOR_CACHE_SEARCHES
+                   | (DWORD) COR_PRF_ENABLE_OBJECT_ALLOCATED
+                   | (DWORD) COR_PRF_MONITOR_JIT_COMPILATION
+                   | (DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED
+//                   | (DWORD) COR_PRF_MONITOR_CODE_TRANSITIONS
+                    ;
+
+    //
+    // read the mode under which the tool is going to operate
+    //
+    if ( pProfConfig->usage == OmvUsageObjects )
+    {
+        m_bTrackingObjects = TRUE;
+        m_dwMode = (DWORD)OBJECT;
+    }
+    else if ( pProfConfig->usage == OmvUsageTrace )
+    {
+        //
+        // mask for call graph, remove GC and OBJECT ALLOCATIONS
+        //
+        m_dwEventMask = m_dwEventMask ^(DWORD) ( COR_PRF_MONITOR_GC
+                                               | COR_PRF_MONITOR_OBJECT_ALLOCATED
+                                               | COR_PRF_ENABLE_OBJECT_ALLOCATED );
+        m_bTrackingCalls = TRUE;
+        m_dwMode = (DWORD)TRACE;
+
+    }
+    else if ( pProfConfig->usage == OmvUsageBoth )
+    {
+        m_bTrackingObjects = TRUE;
+        m_bTrackingCalls = TRUE;
+        m_dwMode = (DWORD)BOTH;
+    }
+    else
+    {
+        m_dwEventMask =  (DWORD) COR_PRF_MONITOR_GC
+                       | (DWORD) COR_PRF_MONITOR_THREADS
+                       | (DWORD) COR_PRF_MONITOR_SUSPENDS;
+        m_dwMode = 0;
+    }
+
+    // retrieve the format
+    m_oldFormat = pProfConfig->bOldFormat;
+
+    if ( m_dwMode & (DWORD)TRACE)
+        m_bIsTrackingStackTrace = TRUE;
+
+    //
+    // look further for env settings if operating under OBJECT mode
+    //
+    if ( m_dwMode & (DWORD)OBJECT )
+    {
+        //
+        // check if the user is going to dynamically enable
+        // object tracking
+        //
+        if ( pProfConfig->bDynamic )
+        {
+            //
+            // do not track object when you start up, activate the thread that
+            // is going to listen for the event
+            //
+            m_dwEventMask = m_dwEventMask ^ (DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
+            m_bTrackingObjects = FALSE;
+            m_dwMode = m_dwMode | (DWORD)DYNOBJECT;
+        }
+
+
+        //
+        // check to see if the user requires stack trace
+        //
+        if ( pProfConfig->bStack )
+        {
+            m_bIsTrackingStackTrace = TRUE;
+            m_dwEventMask = m_dwEventMask
+                            | (DWORD) COR_PRF_MONITOR_ENTERLEAVE
+                            | (DWORD) COR_PRF_MONITOR_EXCEPTIONS
+                            | (DWORD) COR_PRF_MONITOR_CODE_TRANSITIONS;
+
+            //
+            // decide how many frames to print
+            //
+            m_dwFramesToPrint = pProfConfig->dwFramesToPrint;
+
+        }
+
+        //
+        // how many objects you wish to skip
+        //
+        m_dwSkipObjects = pProfConfig->dwSkipObjects;
+
+
+        //
+        // in which class you are interested in
+        // if the env variable does not exist copy to it the null
+        // string otherwise copy its value
+        //
+        if ( pProfConfig->szClassToMonitor[0] != '\0')
+        {
+            const size_t len = strlen(pProfConfig->szClassToMonitor) + 1;
+            m_classToMonitor = new WCHAR[len];
+            if ( m_classToMonitor != NULL )
+            {
+                MultiByteToWideChar(CP_ACP, 0, pProfConfig->szClassToMonitor, (int)len, m_classToMonitor, (int)len);
+            }
+            else
+            {
+                //
+                // some error has happened, do not monitor anything
+                //
+                printf( "Memory Allocation Error in ProfilerCallback .ctor\n" );
+                printf( "**** No Profiling Will Take place **** \n" );
+                m_dwEventMask = (DWORD) COR_PRF_MONITOR_NONE;
+            }
+        }
+    }
+
+    //
+    // check to see if there is an inital setting for tracking allocations and calls
+    //
+    if ( pProfConfig->dwInitialSetting != 0xFFFFFFFF )
+    {
+        if (pProfConfig->dwInitialSetting & 1)
+        {
+            // Turning object stuff on
+            m_dwEventMask = m_dwEventMask | (DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
+            m_bTrackingObjects = TRUE;
+        }
+        else
+        {
+            // Turning object stuff of
+            m_dwEventMask = m_dwEventMask & ~(DWORD) COR_PRF_MONITOR_OBJECT_ALLOCATED;
+            m_bTrackingObjects = FALSE;
+        }
+
+        if (pProfConfig->dwInitialSetting & 2)
+        {
+            m_dwMode = m_dwMode | (DWORD)TRACE;
+            m_bTrackingCalls = TRUE;
+        }
+        else
+        {
+            m_dwMode = m_dwMode & ~(DWORD)TRACE;
+            m_bTrackingCalls = FALSE;
+        }
+    }
+
+//  printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
+}
+
+void ProfilerCallback::LogToAny( const char *format, ... )
+{
+    ///////////////////////////////////////////////////////////////////////////
+//  Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    va_list args;
+    va_start( args, format );
+    vfprintf( m_stream, format, args );
+}
+
+HRESULT ProfilerCallback::_InitializeThreadsAndEvents()
+{
+    HRESULT hr = S_OK;
+
+    //
+    // GC and Dynamic Object triggering
+    //  Step 1. set up the IPC event
+    //  Step 2. set up the IPC callback event
+    //  Step 3. set up the thread
+    //
+    for ( DWORD i=GC_HANDLE; i<m_dwSentinelHandle; i++ )
+    {
+
+        // Step 1
+        m_hArray[i] = OpenEvent( EVENT_ALL_ACCESS,  // access
+                                 FALSE,             // do not inherit
+                                 m_NamedEvents[i] ); // event name
+        if ( m_hArray[i] == NULL )
+        {
+            if (!m_bAttachLoaded && (i != TRIGGER_GC_HANDLE))
+                TEXT_OUTLN( "WARNING: OpenEvent() FAILED Will Attempt CreateEvent()" )
+
+            m_hArray[i] = CreateEvent( NULL,   // Not inherited
+                                       TRUE,   // manual reset type
+                                       FALSE,  // initial signaling state
+                                       m_NamedEvents[i] ); // event name
+            if ( m_hArray[i] == NULL )
+            {
+                TEXT_OUTLN( "CreateEvent() Attempt FAILED" )
+                hr = E_FAIL;
+                break;
+            }
+        }
+
+        // Step 2
+        m_hArrayCallbacks[i] = OpenEvent( EVENT_ALL_ACCESS,    // access
+                                          FALSE,               // do not inherit
+                                          m_CallbackNamedEvents[i] ); // event name
+        if ( m_hArrayCallbacks[i] == NULL )
+        {
+            if (!m_bAttachLoaded && (i != TRIGGER_GC_HANDLE))
+                TEXT_OUTLN( "WARNING: OpenEvent() FAILED Will Attempt CreateEvent()" )
+
+            m_hArrayCallbacks[i] = CreateEvent( NULL,                     // Not inherited
+                                                TRUE,                     // manual reset type
+                                                FALSE,                    // initial signaling state
+                                                m_CallbackNamedEvents[i] ); // event name
+            if ( m_hArrayCallbacks[i] == NULL )
+            {
+                TEXT_OUTLN( "CreateEvent() Attempt FAILED" )
+                hr = E_FAIL;
+                break;
+            }
+        }
+    }
+
+    // Step 3
+    m_hThread = ::CreateThread( NULL,                                       // security descriptor, NULL is not inherited
+                                0,                                          // stack size
+                                (LPTHREAD_START_ROUTINE) ThreadStub,        // start function pointer
+                                (void *) this,                              // parameters for the function
+                                THREAD_PRIORITY_NORMAL,                     // priority
+                                &m_dwWin32ThreadID );                       // Win32threadID
+    if ( m_hThread == NULL )
+    {
+        hr = E_FAIL;
+        TEXT_OUTLN( "ERROR: CreateThread() FAILED" )
+    }
+
+    m_bInitialized = TRUE;
+
+    return hr;
+}
+
+HRESULT ProfilerCallback::_InitializeNamesForEventsAndCallbacks()
+{
+    HRESULT hr = S_OK;
+
+    for ( DWORD i=GC_HANDLE; ( (i<m_dwSentinelHandle) && SUCCEEDED(hr) ); i++ )
+    {
+        //
+        // initialize
+        //
+        m_NamedEvents[i] = NULL;
+        m_CallbackNamedEvents[i] = NULL;
+
+
+        //
+        // allocate space
+        //
+        SIZE_T namedEventLen = wcslen(NamedEvents[i]) + 1 + 9;
+        SIZE_T callbackNamedEventLen = wcslen(CallbackNamedEvents[i])+1+9;
+        m_NamedEvents[i] = new WCHAR[namedEventLen];
+        m_CallbackNamedEvents[i] = new WCHAR[callbackNamedEventLen];
+
+        if ( (m_NamedEvents[i] != NULL) && (m_CallbackNamedEvents[i] != NULL) )
+        {
+            swprintf_s( m_NamedEvents[i], namedEventLen, W("%s_%08x"), NamedEvents[i], m_dwProcessId );
+            swprintf_s( m_CallbackNamedEvents[i], callbackNamedEventLen, W("%s_%08x"), CallbackNamedEvents[i], m_dwProcessId );
+        }
+        else
+            hr = E_FAIL;
+    }
+
+    //
+    //  report the allocation error
+    //
+    if ( FAILED( hr ) )
+        Failure( "ERROR: Allocation Failure" );
+
+    return hr;
 }
