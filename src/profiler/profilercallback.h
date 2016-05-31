@@ -46,8 +46,8 @@ struct ProfConfig
 };
 
 class ProfilerCallback
-    : public ICorProfilerCallback3
-    , public PrfInfo
+    : public PrfInfo
+    , public ICorProfilerCallback3
 {
 public:
     //

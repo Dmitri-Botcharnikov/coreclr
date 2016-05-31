@@ -185,19 +185,23 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::QueryInterface(
     REFIID riid,
     void **ppvObject)
 {
-    if (riid == IID_ICorProfilerCallback3 ||
-        riid == IID_ICorProfilerCallback2 ||
-        riid == IID_ICorProfilerCallback ||
-        riid == IID_IUnknown)
+    if (riid == IID_IUnknown)
+        *ppvObject = static_cast<IUnknown *>(this);
+    else if (riid == IID_ICorProfilerCallback)
+        *ppvObject = static_cast<ICorProfilerCallback *>(this);
+    else if (riid == IID_ICorProfilerCallback2)
+        *ppvObject = static_cast<ICorProfilerCallback2 *>(this);
+    else if (riid == IID_ICorProfilerCallback3)
+        *ppvObject = static_cast<ICorProfilerCallback3 *>(this);
+    else
     {
-        *ppvObject = this;
-        this->AddRef();
-
-        return S_OK;
+        *ppvObject = NULL;
+        return E_NOINTERFACE;
     }
 
-    *ppvObject = NULL;
-    return E_NOINTERFACE;
+    reinterpret_cast<IUnknown *>(*ppvObject)->AddRef();
+
+    return S_OK;
 }
 
 ULONG STDMETHODCALLTYPE ProfilerCallback::AddRef(void)
