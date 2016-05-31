@@ -97,7 +97,6 @@ endfunction()
 
 if(CLR_CMAKE_PLATFORM_UNIX)
   add_subdirectory(ToolBox/SOS/Strike)
-  add_subdirectory(profiler)
 
   # Include the dummy c++ include files
   include_directories("pal/inc/rt/cpp")
@@ -169,4 +168,5 @@ endif(WIN32)
 
 if(CLR_CMAKE_PLATFORM_UNIX)
     add_subdirectory(palrt)
+    add_subdirectory(profiler)
 endif(CLR_CMAKE_PLATFORM_UNIX)
