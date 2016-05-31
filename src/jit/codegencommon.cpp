@@ -7157,7 +7157,17 @@ void CodeGen::genProfilingEnterCallback(regNumber  initReg,
     {
         *pInitRegZeroed = false;
     }
-
+#elif defined(_TARGET_AMD64_)
+    inst_RV(INS_push, REG_RDI, TYP_REF);
+    inst_RV(INS_push, REG_RSI, TYP_REF);
+    instGen_Set_Reg_To_Imm(EA_8BYTE, REG_RDI,
+	(ssize_t)compiler->compProfilerMethHnd);
+    // This will emit either 
+    // "call ip-relative 32-bit offset" or 
+    // "mov rax, helper addr; call rax"
+    genEmitHelperCall(CORINFO_HELP_PROF_FCN_ENTER, 0, EA_UNKNOWN);  
+    inst_RV(INS_pop, REG_RSI, TYP_REF);
+    inst_RV(INS_pop, REG_RDI, TYP_REF);
 #else //!_TARGET_AMD64_
     NYI("RyuJIT: Emit Profiler Enter callback");
 #endif
@@ -7330,6 +7340,75 @@ void                CodeGen::genProfilingLeaveCallback(unsigned helper /*= CORIN
     // "mov r8, helper addr; call r8"
     genEmitHelperCall(helper, 0, EA_UNKNOWN, REG_ARG_2);
 
+#elif defined(_TARGET_AMD64_)
+// Since the method needs to make a profiler callback, it should have out-going arg space allocated.
+// noway_assert(compiler->lvaOutgoingArgSpaceVar != BAD_VAR_NUM);
+// noway_assert(compiler->lvaOutgoingArgSpaceSize >= (4 * REGSIZE_BYTES));
+
+// If thisPtr needs to be kept alive and reported, it cannot be one of the callee trash
+// registers that profiler callback kills.
+if (compiler->lvaKeepAliveAndReportThis() && compiler->lvaTable[compiler->info.compThisArg].lvIsInReg())
+{
+    regMaskTP thisPtrMask = genRegMask(compiler->lvaTable[compiler->info.compThisArg].lvRegNum);
+    noway_assert((RBM_PROFILER_LEAVE_TRASH & thisPtrMask) == 0);
+}
+
+// At this point return value is computed and stored in RAX or XMM0.
+// On Amd64, Leave callback preserves the return register.  We keep
+// RAX alive by not reporting as trashed by helper call.  Also note 
+// that GC cannot kick-in while executing inside profiler callback,
+// which is a requirement of profiler as well since it needs to examine
+// return value which could be an obj ref.
+
+// RCX = ProfilerMethHnd
+if (compiler->compProfilerMethHndIndirected)
+{
+    // Profiler hooks enabled during Ngen time.
+    // Profiler handle needs to be accessed through an indirection of an address.
+    getEmitter()->emitIns_R_AI(INS_mov, EA_PTR_DSP_RELOC, REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd);        
+}
+else
+{
+    // Don't record relocations, if we are generating ELT hooks under the influence
+    // of complus_JitELtHookEnabled=1
+    if (compiler->opts.compJitELTHookEnabled)
+    {
+        genSetRegToIcon(REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd, TYP_I_IMPL);
+    }
+    else
+    {
+        instGen_Set_Reg_To_Imm(EA_8BYTE, REG_ARG_0, (ssize_t)compiler->compProfilerMethHnd);
+    }
+}    
+
+// RDX = caller's SP
+// TODO-AMD64-Cleanup: Once we start doing codegen after final frame layout, retain the "if" portion
+// of the stmnts to execute unconditionally and clean-up rest.
+if (compiler->lvaDoneFrameLayout == Compiler::FINAL_FRAME_LAYOUT)
+{
+    // Caller's SP relative offset to FramePointer will be negative.  We need to add absolute
+    // value of that offset to FramePointer to obtain caller's SP value.
+    int callerSPOffset = compiler->lvaToCallerSPRelativeOffset(0, isFramePointerUsed());
+    getEmitter()->emitIns_R_AR (INS_lea, EA_PTRSIZE, REG_ARG_1, genFramePointerReg(), -callerSPOffset);
+}
+else
+{
+    // If we are here means that it is a tentative frame layout during which we
+    // cannot use caller's SP offset since it is an estimate.  For now we require the 
+    // method to have at least a single arg so that we can use it to obtain caller's
+    // SP.  
+    LclVarDsc* varDsc = compiler->lvaTable;
+    NYI_IF((varDsc == nullptr) || !varDsc->lvIsParam, "Profiler ELT callback for a method without any params");
+
+    // lea rdx, [FramePointer + Arg0's offset]
+    getEmitter()->emitIns_R_S(INS_lea, EA_PTRSIZE, REG_ARG_1, 0, 0);
+}
+
+// We can use any callee trash register (other than RAX, RCX, RDX) for call target. 
+// We use R8 here. This will emit either 
+// "call ip-relative 32-bit offset" or 
+// "mov r8, helper addr; call r8"
+genEmitHelperCall(helper, 0, EA_UNKNOWN, REG_ARG_2);
 #else //!_TARGET_AMD64_
     NYI("RyuJIT: Emit Profiler Leave callback");
 #endif // _TARGET_*

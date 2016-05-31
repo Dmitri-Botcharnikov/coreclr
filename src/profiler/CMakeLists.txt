@@ -4,6 +4,8 @@ project(CoreProfiler)
 
 # add_definitions(-DPAL_STDCPP_COMPAT)
 
+include_directories(${ARCH_SOURCES_DIR})
+
 set(PROFILER_SOURCES_COMMON
   avlnode.cpp
   basehlp.cpp
@@ -14,9 +16,16 @@ set(PROFILER_SOURCES_COMMON
   ProfilerInfo.cpp
 )
 
+if(CLR_CMAKE_TARGET_ARCH_AMD64)
+  set(PROFILER_SOURCES_ASM
+    ${ARCH_SOURCES_DIR}/asmhelpers.S
+  )
+endif()
+
 add_library_clr(coreprof
   SHARED
   ${PROFILER_SOURCES_COMMON}
+  ${PROFILER_SOURCES_ASM}
 )
 
 set(PROFILER_LINK_LIBRARIES
