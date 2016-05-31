@@ -8,6 +8,115 @@
 #define InitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount) \
     InitializeCriticalSectionEx(lpCriticalSection, dwSpinCount, 0)
 
+static bool ContainsHighUnicodeCharsOrQuoteChar(__in_ecount(strLen) WCHAR *str, size_t strLen, WCHAR quoteChar)
+{
+    for (size_t i = 0; i < strLen; i++)
+    {
+        WCHAR c = str[i];
+        if (c == quoteChar || c == '\\' || c >= 0x100)
+            return true;
+        if (c == 0)
+            break;
+    }
+    return false;
+}
+
+static void InsertEscapeChars(__inout_ecount(strLen) WCHAR *str, size_t strLen, WCHAR quoteChar)
+{
+    WCHAR quotedName[4*MAX_LENGTH];
+
+    size_t count = 0;
+    for (size_t i = 0; i < strLen; i++)
+    {
+        WCHAR c = str[i];
+        if (c == 0)
+            break;
+        if (c == quoteChar || c == L'\\')
+        {
+            quotedName[count++] = L'\\';
+            quotedName[count++] = c;
+        }
+        else if (c >= 0x80)
+        {
+            static WCHAR hexChar[17] = W("0123456789abcdef");
+
+            quotedName[count++] = '\\';
+            quotedName[count++] = 'u';
+            quotedName[count++] = hexChar[(c >> 12) & 0x0f];
+            quotedName[count++] = hexChar[(c >>  8) & 0x0f];
+            quotedName[count++] = hexChar[(c >>  4) & 0x0f];
+            quotedName[count++] = hexChar[(c >>  0) & 0x0f];
+        }
+        else
+        {
+            quotedName[count++] = c;
+        }
+        if (count >= ARRAY_LEN(quotedName)-7 || count >= strLen - 7)
+            break;
+    }
+    quotedName[count++] = 0;
+    wcsncpy_s(str, strLen, quotedName, _TRUNCATE);
+}
+
+WCHAR *SanitizeUnicodeName(__inout_ecount(strLen) WCHAR *str, size_t strLen, WCHAR quoteChar)
+{
+    if (ContainsHighUnicodeCharsOrQuoteChar(str, strLen, quoteChar))
+        InsertEscapeChars(str, strLen, quoteChar);
+
+    return str;
+}
+
+static char *puthex(__out_ecount(32) char *p, SIZE_T val)
+{
+    static char hexDig[]  = "0123456789abcdef";
+
+    *p++ = ' ';
+    *p++ = '0';
+    *p++ = 'x';
+
+    char    digStack[sizeof(val)*2];
+
+    int digCount = 0;
+    do
+    {
+        digStack[digCount++] = hexDig[val % 16];
+        val /= 16;
+    }
+    while (val != 0);
+
+    do
+    {
+        *p++ = digStack[--digCount];
+    }
+    while (digCount > 0);
+
+    return p;
+}
+
+static char *putdec(__out_ecount(32) char *p, SIZE_T val)
+{
+    *p++ = ' ';
+
+    char    digStack[sizeof(val)*3];
+
+    int digCount = 0;
+    do
+    {
+        SIZE_T newval = val / 10;
+        digStack[digCount++] = (char)(val - newval*10 + '0');
+        val = newval;
+    }
+    while (val != 0);
+
+    do
+    {
+        *p++ = digStack[--digCount];
+    }
+    while (digCount > 0);
+
+    return p;
+}
+
 ProfilerCallback *g_pCallbackObject; // Global reference to callback object
 
 int tlsIndex;
@@ -42,8 +151,10 @@ HRESULT ProfilerCallback::CreateObject(
 
 ProfilerCallback::ProfilerCallback()
     : PrfInfo()
+    , m_condemnedGenerationIndex(0)
     , m_refCount(1)
     , m_dwShutdown(0)
+    , m_callStackCount(0)
     , m_totalClasses(1)
     , m_totalModules(0)
     , m_totalFunctions(0)
@@ -54,6 +165,7 @@ ProfilerCallback::ProfilerCallback()
     , m_bShutdown(FALSE)
     , m_bDumpGCInfo(FALSE)
     , m_dwProcessId(NULL)
+    , m_bDumpCompleted(FALSE)
     , m_dwSkipObjects(0)
     , m_dwFramesToPrint(0xFFFFFFFF)
     , m_classToMonitor(NULL)
@@ -61,6 +173,8 @@ ProfilerCallback::ProfilerCallback()
     , m_bTrackingCalls(FALSE)
     , m_bIsTrackingStackTrace(FALSE)
     , m_oldFormat(FALSE)
+    , m_lastTickCount(0)
+    , m_lastClockTick(0)
 {
 }
 
@@ -179,6 +293,34 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
         m_dwEventMask = COR_PRF_MONITOR_NONE;
 
     return hr;
+}
+
+__forceinline ThreadInfo *ProfilerCallback::GetThreadInfo()
+{
+    DWORD lastError = GetLastError();
+    ThreadInfo *threadInfo = (ThreadInfo *)TlsGetValue(tlsIndex);
+    if (threadInfo != NULL)
+    {
+        SetLastError(lastError);
+        return threadInfo;
+    }
+
+    ThreadID threadID = 0;
+    HRESULT hr = g_pCallbackObject->m_pProfilerInfo->GetCurrentThreadID(&threadID);
+    if (SUCCEEDED(hr))
+    {
+        threadInfo = g_pCallbackObject->m_pThreadTable->Lookup( threadID );
+        if (threadInfo == NULL)
+        {
+            g_pCallbackObject->AddThread( threadID );
+            threadInfo = g_pCallbackObject->m_pThreadTable->Lookup( threadID );
+        }
+        TlsSetValue(tlsIndex, threadInfo);
+    }
+
+    SetLastError(lastError);
+
+    return threadInfo;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::QueryInterface(
@@ -342,6 +484,35 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::AssemblyLoadFinished(
     HRESULT hrStatus)
 {
     LogProfilerActivity("AssemblyLoadFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    try
+    {
+        ULONG size;
+        WCHAR name[2048];
+        ModuleID moduleId;
+        AppDomainID appDomainId;
+        if(SUCCEEDED(m_pProfilerInfo->GetAssemblyInfo(assemblyId, 2048, &size, name, &appDomainId, &moduleId)))
+        {
+            HRESULT hr = E_FAIL;
+            ThreadInfo *pThreadInfo = GetThreadInfo();
+            if(pThreadInfo != NULL)
+            {
+                LogToAny("y %d 0x%p %S\n", pThreadInfo->m_win32ThreadID, assemblyId, name);
+            }
+        }
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -372,6 +543,39 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ModuleLoadFinished(
     HRESULT hrStatus)
 {
     LogProfilerActivity("ModuleLoadFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    try
+    {
+        ModuleInfo *pModuleInfo = NULL;
+
+
+        AddModule( moduleId, m_totalModules );
+        pModuleInfo = m_pModuleTable->Lookup( moduleId );
+
+        _ASSERT_( pModuleInfo != NULL );
+
+        SIZE_T stackTraceId = _StackTraceId();
+
+        LogToAny( "m %Id %S 0x%p %Id\n",
+                  pModuleInfo->m_internalID,
+                  pModuleInfo->m_moduleName,
+                  pModuleInfo->m_loadAddress,
+                  stackTraceId);
+
+        InterlockedIncrement( &m_totalModules );
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -440,6 +644,24 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationStarted(
     BOOL fIsSafeToBlock)
 {
     LogProfilerActivity("JITCompilationStarted\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    try
+    {
+        AddFunction( functionId, m_totalFunctions );
+        m_totalFunctions++;
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -448,6 +670,50 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
     HRESULT hrStatus, BOOL fIsSafeToBlock)
 {
     LogProfilerActivity("JITCompilationFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+
+    HRESULT hr;
+    ULONG size;
+    LPCBYTE address;
+    FunctionInfo *pFunctionInfo = NULL;
+
+
+    pFunctionInfo = m_pFunctionTable->Lookup( functionId );
+
+    _ASSERT_( pFunctionInfo != NULL );
+    hr = m_pProfilerInfo->GetCodeInfo( functionId, &address, &size );
+    if ( FAILED( hr ) )
+    {
+        address = NULL;
+        size = 0;
+//      This can actually happen unfortunately due to EE limitations
+//      Failure( "ICorProfilerInfo::GetCodeInfo() FAILED" );
+    }
+
+    ModuleID moduleID = 0;
+    ModuleInfo *pModuleInfo = NULL;
+
+    hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, NULL );
+    if ( SUCCEEDED( hr ) )
+    {
+        pModuleInfo = m_pModuleTable->Lookup( moduleID );
+    }
+
+    SIZE_T stackTraceId = _StackTraceId();
+
+    LogToAny( "f %Id %S %S 0x%p %ld %Id %Id\n",
+                pFunctionInfo->m_internalID,
+                SanitizeUnicodeName(pFunctionInfo->m_functionName, ARRAY_LEN(pFunctionInfo->m_functionName), L' '),
+                SanitizeUnicodeName(pFunctionInfo->m_functionSig,  ARRAY_LEN(pFunctionInfo->m_functionSig), L'\0'),
+                address,
+                size,
+                pModuleInfo ? pModuleInfo->m_internalID : 0,
+                stackTraceId);
+
     return S_OK;
 }
 
@@ -456,6 +722,27 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchStarted(
     BOOL *pbUseCachedFunction)
 {
     LogProfilerActivity("JITCachedFunctionSearchStarted\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    // use the pre-jitted function
+    *pbUseCachedFunction = TRUE;
+
+    try
+    {
+        AddFunction( functionId, m_totalFunctions );
+        m_totalFunctions++;
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -464,6 +751,51 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchFinished(
     COR_PRF_JIT_CACHE result)
 {
     LogProfilerActivity("JITCachedFunctionSearchFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+
+    if ( result == COR_PRF_CACHED_FUNCTION_FOUND )
+    {
+        HRESULT hr;
+        ULONG size;
+        LPCBYTE address;
+        FunctionInfo *pFunctionInfo = NULL;
+
+
+        pFunctionInfo = m_pFunctionTable->Lookup( functionId );
+
+        _ASSERT_( pFunctionInfo != NULL );
+        hr = m_pProfilerInfo->GetCodeInfo( functionId, &address, &size );
+        if ( FAILED( hr ) )
+        {
+            address = NULL;
+            size = 0;
+    //      This can actually happen unfortunately due to EE limitations
+    //      Failure( "ICorProfilerInfo::GetCodeInfo() FAILED" );
+        }
+        ModuleID moduleID = 0;
+        ModuleInfo *pModuleInfo = NULL;
+
+        hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, NULL );
+        if ( SUCCEEDED( hr ) )
+        {
+            pModuleInfo = m_pModuleTable->Lookup( moduleID );
+        }
+        SIZE_T stackTraceId = _StackTraceId();
+
+        LogToAny( "f %Id %S %S 0x%p %Id %Id %Id\n",
+                    pFunctionInfo->m_internalID,
+                    pFunctionInfo->m_functionName,
+                    pFunctionInfo->m_functionSig,
+                    address,
+                    size,
+                    pModuleInfo ? pModuleInfo->m_internalID : 0,
+                    stackTraceId);
+    }
+
     return S_OK;
 }
 
@@ -487,6 +819,25 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadCreated(
     ThreadID threadId)
 {
     LogProfilerActivity("ThreadCreated\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( g_pCallbackObject->m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    try
+    {
+        AddThread( threadId );
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
+
+
     return S_OK;
 }
 
@@ -494,6 +845,24 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadDestroyed(
     ThreadID threadId)
 {
     LogProfilerActivity("ThreadDestroyed\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( g_pCallbackObject->m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    try
+    {
+        RemoveThread( threadId );
+        TlsSetValue(tlsIndex, NULL);
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -502,6 +871,33 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ThreadAssignedToOSThread(
     DWORD osThreadId)
 {
     LogProfilerActivity("ThreadAssignedToOSThread\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( g_pCallbackObject->m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if ( managedThreadId != NULL )
+    {
+        if ( osThreadId != NULL )
+        {
+            try
+            {
+                UpdateOSThreadID( managedThreadId, osThreadId );
+            }
+            catch ( BaseException *exception )
+            {
+                exception->ReportFailure();
+                delete exception;
+
+                Failure();
+            }
+        }
+        else
+            Failure( "ProfilerCallback::ThreadAssignedToOSThread() returned NULL OS ThreadID" );
+    }
+    else
+        Failure( "ProfilerCallback::ThreadAssignedToOSThread() returned NULL managed ThreadID" );
+
     return S_OK;
 }
 
@@ -575,6 +971,27 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::UnmanagedToManagedTransition(
     COR_PRF_TRANSITION_REASON reason)
 {
     LogProfilerActivity("UnmanagedToManagedTransition\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if ( reason == COR_PRF_TRANSITION_RETURN )
+    {
+        try
+        {
+            // you need to pop the pseudo function Id from the stack
+            UpdateCallStack( functionId, POP );
+        }
+        catch ( BaseException *exception )
+        {
+            exception->ReportFailure();
+            delete exception;
+
+            Failure();
+        }
+    }
+
     return S_OK;
 }
 
@@ -583,6 +1000,33 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ManagedToUnmanagedTransition(
     COR_PRF_TRANSITION_REASON reason)
 {
     LogProfilerActivity("ManagedToUnmanagedTransition\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if ( reason == COR_PRF_TRANSITION_CALL )
+    {
+        try
+        {
+            // record the start of an unmanaged chain
+            UpdateCallStack( NULL, PUSH );
+            //
+            // log tracing info if requested
+            //
+            if ( m_dwMode & (DWORD)TRACE )
+                _LogCallTrace( NULL );
+
+        }
+        catch ( BaseException *exception )
+        {
+            exception->ReportFailure();
+            delete exception;
+
+            Failure();
+        }
+    }
+
     return S_OK;
 }
 
@@ -614,6 +1058,25 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeResumeStarted(void)
 HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeResumeFinished(void)
 {
     LogProfilerActivity("RuntimeResumeFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    //
+    // identify if this is the first Object allocated callback
+    // after dumping the objects as a result of a Gc and revert the state
+    //
+    if ( m_bDumpGCInfo == TRUE && m_bDumpCompleted == TRUE )
+    {
+        // reset
+        m_bDumpGCInfo = FALSE;
+        m_bDumpCompleted = FALSE;
+
+        // flush the log file so the dump is complete there, too
+        fflush(m_stream);
+    }
+
     return S_OK;
 }
 
@@ -638,6 +1101,33 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::MovedReferences(
     ULONG cObjectIDRangeLength[])
 {
     LogProfilerActivity("MovedReferences\n");
+
+    if ((m_dwMode & OBJECT) == 0)
+        return S_OK;
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    for (ULONG i = 0; i < cMovedObjectIDRanges; i++)
+    {
+#if 1
+        char buffer[256];
+        char *p = buffer;
+        *p++ = 'u';
+        p = puthex(p, oldObjectIDRangeStart[i]);
+        p = puthex(p, newObjectIDRangeStart[i]);
+        p = putdec(p, cObjectIDRangeLength[i]);
+        *p++ = '\n';
+        fwrite(buffer, p - buffer, 1, m_stream);
+#else
+        LogToAny("u 0x%p 0x%p %u\n", oldObjectIDRangeStart[i], newObjectIDRangeStart[i], cObjectIDRangeLength[i]);
+#endif
+    }
+
     return S_OK;
 }
 
@@ -646,6 +1136,69 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectAllocated(
     ClassID classId)
 {
     LogProfilerActivity("ObjectAllocated\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    HRESULT hr = S_OK;
+
+    try
+    {
+        ULONG mySize = 0;
+
+        ThreadInfo *pThreadInfo = GetThreadInfo();
+
+        if ( pThreadInfo != NULL )
+        {
+            hr = m_pProfilerInfo->GetObjectSize( objectId, &mySize );
+            if ( SUCCEEDED( hr ) )
+            {
+                if (GetTickCount() - m_lastClockTick >= 1)
+                    _LogTickCount();
+
+                SIZE_T stackTraceId = _StackTraceId(classId, mySize);
+#if 1
+                char buffer[128];
+                char *p = buffer;
+                if (m_oldFormat)
+                {
+                    *p++ = 'a';
+                }
+                else
+                {
+                    *p++ = '!';
+                    p = putdec(p, pThreadInfo->m_win32ThreadID);
+                }
+                p = puthex(p, objectId);
+                p = putdec(p, stackTraceId);
+                *p++ = '\n';
+                fwrite(buffer, p - buffer, 1, m_stream);
+#else
+                if (m_oldFormat)
+                {
+                    LogToAny( "a 0x%p %Id\n", objectId, stackTraceId );
+                }
+                else
+                {
+                    LogToAny("! %Id 0x%p %Id\n", pThreadInfo->m_win32ThreadID, objectId, stackTraceId);
+                }
+#endif
+            }
+        }
+        else
+            Failure( "ERROR: ICorProfilerInfo::GetObjectSize() FAILED" );
+
+        m_totalObjectsAllocated++;
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -665,6 +1218,102 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectReferences(
     ObjectID objectRefIds[])
 {
     LogProfilerActivity("ObjectReferences\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    //
+    // dump only in the following cases:
+    //      case 1: if the user requested through a ForceGC or
+    //      case 2: if you operate in stand-alone mode dump at all times
+    //
+    if (   (m_bDumpGCInfo == TRUE)
+        || ( ( (m_dwMode & DYNOBJECT) == 0 ) && ( (m_dwMode & OBJECT) == 1) ) )
+    {
+        HRESULT hr = S_OK;
+        ClassInfo *pClassInfo = NULL;
+
+
+        // mark the fact that the callback was received
+        m_bDumpCompleted = TRUE;
+
+        // dump all the information properly
+        hr = _InsertGCClass( &pClassInfo, classId );
+        if ( SUCCEEDED( hr ) )
+        {
+            //
+            // remember the stack trace only if you requested the class
+            //
+            if ( (m_classToMonitor == NULL) || (wcsstr( pClassInfo->m_className, m_classToMonitor ) != NULL) )
+            {
+                ULONG size = 0;
+
+                hr =  m_pProfilerInfo->GetObjectSize( objectId, &size );
+                if ( SUCCEEDED( hr ) )
+                {
+#if 1
+                    char    buffer[1024];
+
+                    char *p = buffer;
+                    *p++ = 'o';
+                    p = puthex(p, objectId);
+                    p = putdec(p, pClassInfo->m_internalID);
+                    p = putdec(p, size);
+                    for(ULONG i = 0; i < cObjectRefs; i++)
+                    {
+                        p = puthex(p, objectRefIds[i]);
+                        if (p - buffer > ARRAY_LEN(buffer) - 32)
+                        {
+                            fwrite(buffer, p - buffer, 1, m_stream);
+                            p = buffer;
+                        }
+                    }
+                    *p++ = '\n';
+                    fwrite(buffer, p - buffer, 1, m_stream);
+#else
+                    char refs[MAX_LENGTH];
+
+
+                    LogToAny( "o 0x%p %Id %d ", objectId, pClassInfo->m_internalID, size );
+                    refs[0] = NULL;
+                    for( ULONG i=0, index=0; i < objectRefs; i++, index++ )
+                    {
+                        char objToString[sizeof(objectRefIDs[i])*2+5];
+
+
+                        sprintf_s( objToString, ARRAY_LEN(objToString), "0x%p ", (void *)objectRefIDs[i] );
+                        strcat_s( refs, ARRAY_LEN(refs), objToString );
+                        //
+                        // buffer overrun control for next iteration
+                        // every loop adds 11 chars to the array
+                        //
+                        if ( ((index+1)*(sizeof(objectRefIDs[i])*2+5)) >= (MAX_LENGTH-1) )
+                        {
+                            LogToAny( "%s ", refs );
+                            refs[0] = NULL;
+                            index = 0;
+                        }
+                    }
+                    LogToAny( "%s\n",refs );
+#endif
+                }
+                else
+                    Failure( "ERROR: ICorProfilerInfo::GetObjectSize() FAILED" );
+            }
+        }
+        else
+            Failure( "ERROR: _InsertGCClass FAILED" );
+    }
+    else
+    {
+        // to stop runtime from enumerating
+        return E_FAIL;
+    }
+
     return S_OK;
 }
 
@@ -673,9 +1322,59 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::RootReferences(
     ObjectID rootRefIds[])
 {
     LogProfilerActivity("RootReferences\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    //
+    // dump only in the following cases:
+    //      case 1: if the user requested through a ForceGC or
+    //      case 2: if you operate in stand-alone mode dump at all times
+    //
+    if (   (m_bDumpGCInfo == TRUE)
+        || ( ( (m_dwMode & DYNOBJECT) == 0 ) && ( (m_dwMode & OBJECT) == 1) ) )
+    {
+        char rootsToString[MAX_LENGTH];
+
+
+        // mark the fact that the callback was received
+        m_bDumpCompleted = TRUE;
+
+        // dump all the information properly
+        LogToAny( "r " );
+        rootsToString[0] = NULL;
+        for( ULONG i=0, index=0; i < cRootRefs; i++,index++ )
+        {
+            char objToString[sizeof(rootRefIds[i])*2+5];
+
+
+            sprintf_s( objToString, ARRAY_LEN(objToString), "0x%p ", (void *)rootRefIds[i] );
+            strcat_s( rootsToString, ARRAY_LEN(rootsToString), objToString );
+            //
+            // buffer overrun control for next iteration
+            // every loop adds 16 chars to the array
+            //
+            if ( ((index+1)*(sizeof(rootRefIds[i])*2+5)) >= (MAX_LENGTH-1) )
+            {
+                LogToAny( "%s ", rootsToString );
+                rootsToString[0] = NULL;
+                index = 0;
+            }
+        }
+        LogToAny( "%s\n",rootsToString );
+    }
+    else
+    {
+        // to stop runtime from enumerating
+        return E_FAIL;
+    }
+
     return S_OK;
 }
-
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::GarbageCollectionStarted(
     int cGenerations,
@@ -683,6 +1382,32 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::GarbageCollectionStarted(
     COR_PRF_GC_REASON reason)
 {
     LogProfilerActivity("GarbageCollectionStarted\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        m_bWaitingForTheFirstGC = FALSE;
+
+    int generation = COR_PRF_GC_GEN_1;
+    for ( ; generation < COR_PRF_GC_LARGE_OBJECT_HEAP; generation++)
+        if (!generationCollected[generation])
+            break;
+    generation--;
+
+    if (m_condemnedGenerationIndex >= ARRAY_LEN(m_condemnedGeneration))
+    {
+       _THROW_EXCEPTION( "Logic error!  m_condemnedGenerationIndex is out of legal range." );
+    }
+
+    m_condemnedGeneration[m_condemnedGenerationIndex++] = generation;
+
+    _GenerationBounds(TRUE, reason == COR_PRF_GC_INDUCED, generation);
+
+    if (((m_dwMode & OBJECT) == OBJECT) && (GetTickCount() - m_lastClockTick >= 1))
+        _LogTickCount();
+
     return S_OK;
 }
 
@@ -692,20 +1417,81 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::SurvivingReferences(
     ULONG cObjectIDRangeLength[])
 {
     LogProfilerActivity("SurvivingReferences\n");
+
+    if ((m_dwMode & OBJECT) == 0)
+        return S_OK;
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    for (ULONG i = 0; i < cSurvivingObjectIDRanges; i++)
+    {
+#if 1
+        char buffer[256];
+        char *p = buffer;
+        *p++ = 'v';
+        p = puthex(p, objectIDRangeStart[i]);
+        p = putdec(p, cObjectIDRangeLength[i]);
+        *p++ = '\n';
+        fwrite(buffer, p - buffer, 1, m_stream);
+#else
+        LogToAny("v 0x%p %u\n", objectIDRangeStart[i], cObjectIDRangeLength[i]);
+#endif
+    }
+
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::GarbageCollectionFinished(void)
 {
     LogProfilerActivity("GarbageCollectionFinished\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    if (m_condemnedGenerationIndex == 0)
+    {
+       _THROW_EXCEPTION( "Logic error!  m_condemnedGenerationIndex is out of legal range." );
+    }
+
+    int collectedGeneration = m_condemnedGeneration[--m_condemnedGenerationIndex];
+    _GenerationBounds(FALSE, FALSE, collectedGeneration);
+
+    for (int i = 0 ; i <= collectedGeneration ; i++)
+        m_GCcounter[i]++;
+
+    if ((m_dwMode & OBJECT) == OBJECT)
+        LogToAny( "g %Id %Id %Id\n", m_GCcounter[COR_PRF_GC_GEN_0], m_GCcounter[COR_PRF_GC_GEN_1], m_GCcounter[COR_PRF_GC_GEN_2]);
+
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::FinalizeableObjectQueued(
     DWORD finalizerFlags,
-    ObjectID objectID)
+    ObjectID objectId)
 {
     LogProfilerActivity("FinalizeableObjectQueued\n");
+
+    if ((m_dwMode & OBJECT) == 0)
+        return S_OK;
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    LogToAny("l %u 0x%p\n", finalizerFlags, objectId);
+
     return S_OK;
 }
 
@@ -717,6 +1503,37 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::RootReferences2(
     UINT_PTR rootIds[])
 {
     LogProfilerActivity("RootReferences2\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if (m_bAttachLoaded && m_bWaitingForTheFirstGC)
+        return S_OK;
+
+    //
+    // dump only in the following cases:
+    //      case 1: if the user requested through a ForceGC or
+    //      case 2: if you operate in stand-alone mode dump at all times
+    //
+    if (   (m_bDumpGCInfo == TRUE)
+        || ( ( (m_dwMode & DYNOBJECT) == 0 ) && ( (m_dwMode & OBJECT) == 1) ) )
+    {
+        for (ULONG i = 0; i < cRootRefs; i++)
+        {
+            if (rootKinds[i] == COR_PRF_GC_ROOT_STACK)
+            {
+                FunctionInfo *pFunctionInfo = m_pFunctionTable->Lookup( rootIds[i] );
+                if ( pFunctionInfo != NULL )
+                {
+                    LogToAny("e 0x%p %u 0x%x %Iu\n", rootRefIds[i], rootKinds[i], rootFlags[i], pFunctionInfo->m_internalID);
+                    continue;
+                }
+            }
+            LogToAny("e 0x%p %u 0x%x 0x%p\n", rootRefIds[i], rootKinds[i], rootFlags[i], rootIds[i]);
+        }
+    }
+
     return S_OK;
 }
 
@@ -725,6 +1542,25 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::HandleCreated(
     ObjectID initialObjectId)
 {
     LogProfilerActivity("HandleCreated\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    HRESULT hr = E_FAIL;
+    DWORD win32ThreadID = 0;
+    SIZE_T stackTraceId = 0;
+
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+
+    if ( pThreadInfo != NULL )
+    {
+        win32ThreadID = pThreadInfo->m_win32ThreadID;
+        stackTraceId = _StackTraceId();
+    }
+
+    LogToAny( "h %d 0x%p 0x%p %Id\n", win32ThreadID, handleId, initialObjectId, stackTraceId );
+
     return S_OK;
 }
 
@@ -732,6 +1568,26 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::HandleDestroyed(
     GCHandleID handleId)
 {
     LogProfilerActivity("HandleDestroyed\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    HRESULT hr = E_FAIL;
+    ThreadID threadID = NULL;
+    DWORD win32ThreadID = 0;
+    SIZE_T stackTraceId = 0;
+
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+
+    if ( pThreadInfo != NULL )
+    {
+        win32ThreadID = pThreadInfo->m_win32ThreadID;
+        stackTraceId = _StackTraceId();
+    }
+
+    LogToAny( "j %d 0x%p %Id\n", win32ThreadID, handleId, stackTraceId );
+
     return S_OK;
 }
 
@@ -793,12 +1649,54 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFunctionEnter(
     FunctionID functionId)
 {
     LogProfilerActivity("ExceptionUnwindFunctionEnter\n");
+
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( g_pCallbackObject->m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    if ( functionId != NULL )
+    {
+        try
+        {
+            UpdateUnwindStack( &functionId, PUSH );
+        }
+        catch ( BaseException *exception )
+        {
+            exception->ReportFailure();
+            delete exception;
+
+            Failure();
+        }
+    }
+    else
+        Failure( "ProfilerCallback::ExceptionUnwindFunctionEnter returned NULL functionId FAILED" );
+
+
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFunctionLeave(void)
 {
     LogProfilerActivity("ExceptionUnwindFunctionLeave\n");
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    FunctionID poppedFunctionID = NULL;
+
+    try
+    {
+        UpdateUnwindStack( &poppedFunctionID, POP );
+        UpdateCallStack( poppedFunctionID, POP );
+    }
+    catch ( BaseException *exception )
+    {
+        exception->ReportFailure();
+        delete exception;
+
+        Failure();
+    }
+
     return S_OK;
 }
 
@@ -853,7 +1751,65 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::InitializeForAttach(
     UINT cbClientData)
 {
     LogProfilerActivity("InitializeForAttach\n");
-    return S_OK;
+
+    HRESULT hr;
+    if (cbClientData != sizeof(ProfConfig))
+    {
+        Failure( "ProfilerCallback::InitializeForAttach: Client data bogus!\n" );
+        return E_INVALIDARG;
+    }
+
+    m_bAttachLoaded = TRUE;
+    m_bWaitingForTheFirstGC = TRUE;
+
+    ProfConfig * pProfConfig = (ProfConfig *) pvClientData;
+    _ProcessProfConfig(pProfConfig);
+
+    if ( (m_dwEventMask & (~COR_PRF_ALLOWABLE_AFTER_ATTACH)) != 0 )
+    {
+        Failure( "ProfilerCallback::InitializeForAttach: Unsupported event mode for attach" );
+        return E_INVALIDARG;
+    }
+    hr = pCorProfilerInfoUnk->QueryInterface( IID_ICorProfilerInfo,
+                                               (void **)&m_pProfilerInfo );
+
+    if ( SUCCEEDED( hr ) )
+    {
+        hr = pCorProfilerInfoUnk->QueryInterface( IID_ICorProfilerInfo2,
+                                                   (void **)&m_pProfilerInfo2 );
+    }
+
+    if ( SUCCEEDED( hr ) )
+    {
+        hr = pCorProfilerInfoUnk->QueryInterface( IID_ICorProfilerInfo3,
+                                                   (void **)&m_pProfilerInfo3 );
+    }
+    if ( SUCCEEDED( hr ) )
+    {
+        hr = m_pProfilerInfo->SetEventMask( m_dwEventMask );
+
+        if ( SUCCEEDED( hr ) )
+        {
+            hr = Init(pProfConfig);
+            if (FAILED(hr))
+            {
+                return hr;
+            }
+
+            // hr = _InitializeThreadsAndEvents();
+            if ( FAILED( hr ) )
+                Failure( "Unable to initialize the threads and handles, No profiling" );
+            Sleep(100); // Give the threads a chance to read any signals that are already set.
+        }
+        else
+        {
+            Failure( "SetEventMask for Profiler Test FAILED" );
+        }
+    }
+    else
+        Failure( "Allocation for Profiler Test FAILED" );
+
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::ProfilerAttachComplete(void)
@@ -878,6 +1834,113 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionCLRCatcherExecute(void)
 {
     LogProfilerActivity("ExceptionCLRCatcherExecute\n");
     return S_OK;
+}
+
+SIZE_T ProfilerCallback::_StackTraceId(SIZE_T typeId, SIZE_T typeSize)
+{
+    ThreadID threadID = NULL;
+
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+    if ( pThreadInfo != NULL )
+    {
+        DWORD count = pThreadInfo->m_pThreadCallStack->Count();
+        StackTrace stackTrace(count, pThreadInfo->m_pThreadCallStack->m_Array, typeId, typeSize);
+        StackTraceInfo *latestStackTraceInfo = pThreadInfo->m_pLatestStackTraceInfo;
+        if(latestStackTraceInfo != NULL && latestStackTraceInfo->Compare(stackTrace) == TRUE)
+        {
+            return latestStackTraceInfo->m_internalId;
+        }
+
+        StackTraceInfo *stackTraceInfo = m_pStackTraceTable->Lookup(stackTrace);
+        if (stackTraceInfo != NULL)
+        {
+            pThreadInfo->m_pLatestStackTraceInfo = stackTraceInfo;
+            return stackTraceInfo->m_internalId;
+        }
+
+        stackTraceInfo = new StackTraceInfo(++m_callStackCount, count, pThreadInfo->m_pThreadCallStack->m_Array, typeId, typeSize);
+        if (stackTraceInfo == NULL)
+            _THROW_EXCEPTION( "Allocation for StackTraceInfo FAILED" );
+
+        pThreadInfo->m_pLatestStackTraceInfo = stackTraceInfo;
+        m_pStackTraceTable->AddEntry(stackTraceInfo, stackTrace);
+
+        ClassInfo *pClassInfo = NULL;
+        if (typeId != 0 && typeSize != 0)
+        {
+            HRESULT hr = _InsertGCClass( &pClassInfo, typeId );
+            if ( !SUCCEEDED( hr ) )
+                Failure( "ERROR: _InsertGCClass() FAILED" );
+        }
+
+        // used to be `s` before the change of format
+        LogToAny("n %d", m_callStackCount);
+
+        int flag = 0;
+        if (typeId != 0 && typeSize != 0)
+        {
+            flag |= 1;
+        }
+
+        int i, match = 0;
+        if (latestStackTraceInfo != NULL)
+        {
+            match = min(latestStackTraceInfo->m_count, count);
+            for(i = 0; i < match; i++)
+            {
+                if(latestStackTraceInfo->m_stack[i] != (pThreadInfo->m_pThreadCallStack)->m_Array[i])
+                {
+                    break;
+                }
+            }
+
+            flag |= (4 * i);
+            flag |= (latestStackTraceInfo->m_typeId != 0 && latestStackTraceInfo->m_typeSize != 0) ? 2 : 0;
+
+            match = i;
+        }
+        /* */
+
+        LogToAny(" %d", flag);
+
+        if (typeId != 0 && typeSize != 0)
+        {
+            LogToAny(" %Id %d", pClassInfo->m_internalID, typeSize);
+        }
+
+        if (flag >= 4)
+        {
+            LogToAny(" %Id", latestStackTraceInfo->m_internalId);
+        }
+
+        for (DWORD frame = match; frame < count; frame++ )
+        {
+            SIZE_T stackElement = (pThreadInfo->m_pThreadCallStack)->m_Array[frame];
+            FunctionInfo *pFunctionInfo = m_pFunctionTable->Lookup( stackElement );
+            if ( pFunctionInfo != NULL )
+                LogToAny( " %Id", pFunctionInfo->m_internalID );
+            else
+                Failure( "ERROR: Function Not Found In Function Table" );
+        } // end for loop
+        LogToAny("\n");
+
+        return stackTraceInfo->m_internalId;
+    }
+    else
+        Failure( "ERROR: Thread Structure was not found in the thread list" );
+
+    return 0;
+}
+
+void ProfilerCallback::_LogTickCount()
+{
+    DWORD tickCount = GetTickCount();
+    if (tickCount != m_lastTickCount)
+    {
+        m_lastTickCount = tickCount;
+        LogToAny("i %u\n", tickCount - m_firstTickCount);
+    }
+    m_lastClockTick = GetTickCount();
 }
 
 void ProfilerCallback::_GetProfConfigFromEnvironment(ProfConfig * pProfConfig)
@@ -1156,4 +2219,447 @@ void ProfilerCallback::LogToAny( const char *format, ... )
     va_list args;
     va_start( args, format );
     vfprintf( m_stream, format, args );
+}
+
+HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
+{
+    ///////////////////////////////////////////////////////////////////////////
+    Synchronize guard( m_criticalSection );
+    ///////////////////////////////////////////////////////////////////////////
+
+    HRESULT hr = E_FAIL;
+    ThreadID threadID = NULL;
+
+
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+
+    if ( pThreadInfo != NULL )
+    {
+        SIZE_T stackTraceId = _StackTraceId();
+#if 1
+        char buffer[128];
+        char *p = buffer;
+        *p++ = 'c';
+        p = putdec(p, pThreadInfo->m_win32ThreadID);
+        p = putdec(p, stackTraceId);
+        *p++ = '\n';
+        fwrite(buffer, p - buffer, 1, m_stream);
+#else
+        LogToAny( "c %d %Id\n", pThreadInfo->m_win32ThreadID, stackTraceId );
+#endif
+    }
+    else
+        Failure( "ERROR: Thread Structure was not found in the thread list" );
+
+    return hr;
+}
+
+HRESULT ProfilerCallback::_GetNameFromElementType( CorElementType elementType, __out_ecount(buflen) WCHAR *buffer, size_t buflen )
+{
+    HRESULT hr = S_OK;
+
+    switch ( elementType )
+    {
+        case ELEMENT_TYPE_BOOLEAN:
+             wcscpy_s( buffer, buflen, W("System.Boolean") );
+             break;
+
+        case ELEMENT_TYPE_CHAR:
+             wcscpy_s( buffer, buflen, W("System.Char") );
+             break;
+
+        case ELEMENT_TYPE_I1:
+             wcscpy_s( buffer, buflen, W("System.SByte") );
+             break;
+
+        case ELEMENT_TYPE_U1:
+             wcscpy_s( buffer, buflen, W("System.Byte") );
+             break;
+
+        case ELEMENT_TYPE_I2:
+             wcscpy_s( buffer, buflen, W("System.Int16") );
+             break;
+
+        case ELEMENT_TYPE_U2:
+             wcscpy_s( buffer, buflen, W("System.UInt16") );
+             break;
+
+        case ELEMENT_TYPE_I4:
+             wcscpy_s( buffer, buflen, W("System.Int32") );
+             break;
+
+        case ELEMENT_TYPE_U4:
+             wcscpy_s( buffer, buflen, W("System.UInt32") );
+             break;
+
+        case ELEMENT_TYPE_I8:
+             wcscpy_s( buffer, buflen, W("System.Int64") );
+             break;
+
+        case ELEMENT_TYPE_U8:
+             wcscpy_s( buffer, buflen, W("System.UInt64") );
+             break;
+
+        case ELEMENT_TYPE_R4:
+             wcscpy_s( buffer, buflen, W("System.Single") );
+             break;
+
+        case ELEMENT_TYPE_R8:
+             wcscpy_s( buffer, buflen, W("System.Double") );
+             break;
+
+        case ELEMENT_TYPE_STRING:
+             wcscpy_s( buffer, buflen, W("System.String") );
+             break;
+
+        case ELEMENT_TYPE_PTR:
+             wcscpy_s( buffer, buflen, W("System.IntPtr") );
+             break;
+
+        case ELEMENT_TYPE_VALUETYPE:
+             wcscpy_s( buffer, buflen, W("struct") );
+             break;
+
+        case ELEMENT_TYPE_CLASS:
+             wcscpy_s( buffer, buflen, W("class") );
+             break;
+
+        case ELEMENT_TYPE_ARRAY:
+             wcscpy_s( buffer, buflen, W("System.Array") );
+             break;
+
+        case ELEMENT_TYPE_I:
+             wcscpy_s( buffer, buflen, W("int_ptr") );
+             break;
+
+        case ELEMENT_TYPE_U:
+             wcscpy_s( buffer, buflen, W("unsigned int_ptr") );
+             break;
+
+        case ELEMENT_TYPE_OBJECT:
+             wcscpy_s( buffer, buflen, W("System.Object") );
+             break;
+
+        case ELEMENT_TYPE_SZARRAY:
+             wcscpy_s( buffer, buflen, W("System.Array") );
+             break;
+
+        case ELEMENT_TYPE_MAX:
+        case ELEMENT_TYPE_END:
+        case ELEMENT_TYPE_VOID:
+        case ELEMENT_TYPE_FNPTR:
+        case ELEMENT_TYPE_BYREF:
+        case ELEMENT_TYPE_PINNED:
+        case ELEMENT_TYPE_SENTINEL:
+        case ELEMENT_TYPE_CMOD_OPT:
+        case ELEMENT_TYPE_MODIFIER:
+        case ELEMENT_TYPE_CMOD_REQD:
+        case ELEMENT_TYPE_TYPEDBYREF:
+        default:
+             wcscpy_s( buffer, buflen, W("<UNKNOWN>") );
+             break;
+    }
+
+    return hr;
+}
+
+bool ProfilerCallback::_ClassHasFinalizeMethod(IMetaDataImport *pMetaDataImport, mdToken classToken, DWORD *pdwAttr)
+{
+    HRESULT hr = S_OK;
+//                      printf("got module metadata\n");
+    HCORENUM hEnum = 0;
+    mdMethodDef methodDefToken[100];
+    ULONG methodDefTokenCount = 0;
+    hr = pMetaDataImport->EnumMethodsWithName(&hEnum, classToken, W("Finalize"), methodDefToken, 100, &methodDefTokenCount);
+    pMetaDataImport->CloseEnum(hEnum);
+    if (SUCCEEDED(hr))
+    {
+//                              if (methodDefTokenCount > 0)
+//                                  printf("found %d finalize methods on %S\n", methodDefTokenCount, (*ppClassInfo)->m_className);
+        for (ULONG i = 0; i < methodDefTokenCount; i++)
+        {
+            mdTypeDef classTypeDef;
+            WCHAR   szMethod[MAX_CLASS_NAME];
+            ULONG   cchMethod;
+            PCCOR_SIGNATURE pvSigBlob;
+            ULONG   cbSigBlob;
+            ULONG   ulCodeRVA;
+            DWORD   dwImplFlags;
+            hr = pMetaDataImport->GetMethodProps(methodDefToken[i], &classTypeDef, szMethod, MAX_CLASS_NAME, &cchMethod, pdwAttr,
+                                                &pvSigBlob, &cbSigBlob, &ulCodeRVA, &dwImplFlags);
+
+            if (SUCCEEDED(hr) && !IsMdStatic(*pdwAttr) && IsMdVirtual(*pdwAttr))
+            {
+                hEnum = 0;
+                mdParamDef params[100];
+                ULONG paramCount = 0;
+                hr = pMetaDataImport->EnumParams(&hEnum, methodDefToken[i], params, 100, &paramCount);
+                pMetaDataImport->CloseEnum(hEnum);
+                if (SUCCEEDED(hr))
+                {
+                    if (paramCount == 0)
+                    {
+//                          printf("finalize method #%d on %S has attr = %x  impl flags = %x\n", i, (*ppClassInfo)->m_className, dwAttr, dwImplFlags);
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool ProfilerCallback::_ClassOverridesFinalize(IMetaDataImport *pMetaDataImport, mdToken classToken)
+{
+    DWORD dwAttr = 0;
+    return _ClassHasFinalizeMethod(pMetaDataImport, classToken, &dwAttr) && IsMdReuseSlot(dwAttr);
+}
+
+bool ProfilerCallback::_ClassReintroducesFinalize(IMetaDataImport *pMetaDataImport, mdToken classToken)
+{
+    DWORD dwAttr = 0;
+    return _ClassHasFinalizeMethod(pMetaDataImport, classToken, &dwAttr) && IsMdNewSlot(dwAttr);
+}
+
+bool ProfilerCallback::_ClassIsFinalizable(ModuleID moduleID, mdToken classToken)
+{
+    IMetaDataImport *pMetaDataImport = NULL;
+    HRESULT hr = S_OK;
+    hr = m_pProfilerInfo->GetModuleMetaData(moduleID, 0, IID_IMetaDataImport, (IUnknown **)&pMetaDataImport);
+    if (SUCCEEDED(hr))
+    {
+        bool result = false;
+        while (true)
+        {
+            WCHAR   szTypeDef[MAX_CLASS_NAME];
+            ULONG   chTypeDef = 0;
+            DWORD   dwTypeDefFlags = 0;
+            mdToken baseToken = mdTokenNil;
+            hr = pMetaDataImport->GetTypeDefProps(classToken, szTypeDef, MAX_CLASS_NAME, &chTypeDef, &dwTypeDefFlags, &baseToken);
+            if (hr == S_OK)
+            {
+                if (IsNilToken(baseToken))
+                {
+//                  printf("  Class %S has no base class - base token = %u\n", szTypeDef, baseToken);
+                    return result;
+                }
+                if (_ClassOverridesFinalize(pMetaDataImport, classToken))
+                {
+//                  printf("  Class %S overrides Finalize\n", szTypeDef);
+                    result = true;
+                }
+                else if (_ClassReintroducesFinalize(pMetaDataImport, classToken))
+                {
+//                  printf("  Class %S reintroduces Finalize\n", szTypeDef);
+                    result = false;
+                }
+            }
+            else
+            {
+//              printf("  _ClassIsFinalizable got an error\n");
+                return result;
+            }
+
+            if (TypeFromToken(baseToken) == mdtTypeRef)
+            {
+                WCHAR szName[MAX_CLASS_NAME];
+                ULONG chName = 0;
+                mdToken resolutionScope = mdTokenNil;
+                hr = pMetaDataImport->GetTypeRefProps(baseToken, &resolutionScope, szName, MAX_CLASS_NAME, &chName);
+                if (hr == S_OK)
+                {
+//                  printf("trying to resolve %S\n", szName);
+                    IMetaDataImport *pMetaDataImportRef = NULL;
+                    hr = pMetaDataImport->ResolveTypeRef(baseToken, IID_IMetaDataImport, (IUnknown **)&pMetaDataImportRef, &baseToken);
+                    if (hr == S_OK)
+                    {
+                        pMetaDataImport->Release();
+                        pMetaDataImport = pMetaDataImportRef;
+                        classToken = baseToken;
+//                      printf("successfully resolved class %S\n", szName);
+                    }
+                    else
+                    {
+                        printf("got error trying to resolve %S\n", szName);
+                        return result;
+                    }
+                }
+            }
+            else
+                classToken = baseToken;
+        }
+        pMetaDataImport->Release();
+    }
+    else
+    {
+        printf("  _ClassIsFinalizable got an error\n");
+        return false;
+    }
+}
+
+HRESULT ProfilerCallback::_InsertGCClass( ClassInfo **ppClassInfo, ClassID classID )
+{
+    HRESULT hr = S_OK;
+
+    *ppClassInfo = m_pClassTable->Lookup( classID );
+    if ( *ppClassInfo == NULL )
+    {
+        *ppClassInfo = new ClassInfo( classID );
+        if ( *ppClassInfo != NULL )
+        {
+            //
+            // we have 2 cases
+            // case 1: class is an array
+            // case 2: class is a real class
+            //
+            ULONG rank = 0;
+            CorElementType elementType;
+            ClassID realClassID = NULL;
+            WCHAR ranks[MAX_LENGTH];
+            bool finalizable = false;
+
+
+            // case 1
+            hr = m_pProfilerInfo->IsArrayClass( classID, &elementType, &realClassID, &rank );
+            if ( hr == S_OK )
+            {
+                ClassID prevClassID;
+
+
+                _ASSERT_( realClassID != NULL );
+                ranks[0] = '\0';
+                do
+                {
+                    prevClassID = realClassID;
+                    _snwprintf_s( ranks, ARRAY_LEN(ranks), ARRAY_LEN(ranks)-1, W("%s[]"), ranks);
+                    hr = m_pProfilerInfo->IsArrayClass( prevClassID, &elementType, &realClassID, &rank );
+                    if ( (hr == S_FALSE) || (FAILED(hr)) || (realClassID == NULL) )
+                    {
+                        //
+                        // before you break set the realClassID to the value that it was before the
+                        // last unsuccessful call
+                        //
+                        realClassID = prevClassID;
+
+                        break;
+                    }
+                }
+                while ( TRUE );
+
+                if ( SUCCEEDED( hr ) )
+                {
+                    WCHAR className[10 * MAX_LENGTH];
+
+
+                    className[0] = '\0';
+                    if ( realClassID != NULL )
+                        hr = GetNameFromClassID( realClassID, className );
+                    else
+                        hr = _GetNameFromElementType( elementType, className, ARRAY_LEN(className) );
+
+
+                    if ( SUCCEEDED( hr ) )
+                    {
+                        const size_t len = ARRAY_LEN((*ppClassInfo)->m_className);
+                        _snwprintf_s( (*ppClassInfo)->m_className, len, len-1, W("%s %s"),className, ranks  );
+                        (*ppClassInfo)->m_objectsAllocated++;
+                        (*ppClassInfo)->m_internalID = m_totalClasses;
+                        m_pClassTable->AddEntry( *ppClassInfo, classID );
+                        LogToAny( "t %Id %d %S\n",(*ppClassInfo)->m_internalID,
+                                                  finalizable,
+                                                  SanitizeUnicodeName((*ppClassInfo)->m_className, ARRAY_LEN((*ppClassInfo)->m_className), L'\0'));
+                    }
+                    else
+                        Failure( "ERROR: PrfHelper::GetNameFromClassID() FAILED" );
+                }
+                else
+                    Failure( "ERROR: Looping for Locating the ClassID FAILED" );
+            }
+            // case 2
+            else if ( hr == S_FALSE )
+            {
+                hr = GetNameFromClassID( classID, (*ppClassInfo)->m_className );
+                if ( SUCCEEDED( hr ) )
+                {
+                    (*ppClassInfo)->m_objectsAllocated++;
+                    (*ppClassInfo)->m_internalID = m_totalClasses;
+                    m_pClassTable->AddEntry( *ppClassInfo, classID );
+
+                    ModuleID moduleID = 0;
+                    mdTypeDef typeDefToken = 0;
+
+                    hr = m_pProfilerInfo->GetClassIDInfo(classID, &moduleID, &typeDefToken);
+                    if (SUCCEEDED(hr))
+                    {
+//                      printf("Class %x has module %x and type def token %x\n", classID, moduleID, typeDefToken);
+//                      printf("Checking class %S for finalizability\n", (*ppClassInfo)->m_className);
+                        finalizable = _ClassIsFinalizable(moduleID, typeDefToken);
+//                      if (finalizable)
+//                          printf("Class %S is finalizable\n", (*ppClassInfo)->m_className);
+//                      else
+//                          printf("Class %S is not finalizable\n", (*ppClassInfo)->m_className);
+                    }
+
+                    LogToAny( "t %Id %d %S\n",(*ppClassInfo)->m_internalID,
+                                              finalizable,
+                                              SanitizeUnicodeName((*ppClassInfo)->m_className, ARRAY_LEN((*ppClassInfo)->m_className), L'\0'));
+                }
+                else
+                    Failure( "ERROR: PrfHelper::GetNameFromClassID() FAILED" );
+            }
+            else
+                Failure( "ERROR: ICorProfilerInfo::IsArrayClass() FAILED" );
+        }
+        else
+            Failure( "ERROR: Allocation for ClassInfo FAILED" );
+
+        InterlockedIncrement( &m_totalClasses );
+    }
+    else
+        (*ppClassInfo)->m_objectsAllocated++;
+
+
+    return hr;
+}
+
+void ProfilerCallback::_GenerationBounds(BOOL beforeGarbageCollection, BOOL inducedGc, int collectedGeneration)
+{
+    if ((m_dwMode & OBJECT) == 0)
+        return;
+
+    // we want the log entry on its own tick
+    while (GetTickCount() == m_lastTickCount)
+        Sleep(0);
+    _LogTickCount();
+
+    ULONG maxObjectRanges = 100;
+    ULONG cObjectRanges;
+    while (true)
+    {
+        COR_PRF_GC_GENERATION_RANGE *ranges = new COR_PRF_GC_GENERATION_RANGE[maxObjectRanges];
+
+        cObjectRanges = 0;
+        HRESULT hr = m_pProfilerInfo2->GetGenerationBounds(maxObjectRanges,
+                                                          &cObjectRanges,
+                                                           ranges);
+        if (hr != S_OK)
+            break;
+
+        if (cObjectRanges <= maxObjectRanges)
+        {
+            LogToAny("b %u %u %u", beforeGarbageCollection, inducedGc, collectedGeneration);
+            for (ULONG i = 0; i < cObjectRanges; i++)
+            {
+                LogToAny(" 0x%p %Iu %Iu %d", ranges[i].rangeStart, ranges[i].rangeLength, ranges[i].rangeLengthReserved, ranges[i].generation);
+            }
+            LogToAny("\n");
+        }
+
+        delete[] ranges;
+
+        if (cObjectRanges <= maxObjectRanges)
+            break;
+
+        maxObjectRanges *= 2;
+    }
 }

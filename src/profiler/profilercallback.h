@@ -64,6 +64,9 @@ public:
     HRESULT Init(ProfConfig * pProfConfig);
 
 public:
+    static ThreadInfo *GetThreadInfo();
+
+public:
     //
     // IUnknown methods
     //
@@ -322,7 +325,7 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE FinalizeableObjectQueued(
         DWORD finalizerFlags,
-        ObjectID objectID) override;
+        ObjectID objectId) override;
 
     virtual HRESULT STDMETHODCALLTYPE RootReferences2(
         ULONG cRootRefs,
@@ -422,17 +425,30 @@ public:
     virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherExecute(void) override;
 
 private:
+    SIZE_T _StackTraceId(SIZE_T typeId=0, SIZE_T typeSize=0);
+    void _LogTickCount();
     void _GetProfConfigFromEnvironment(ProfConfig *pProfConfig);
     void _ProcessProfConfig(ProfConfig *pProfConfig);
     void LogToAny( const char *format, ... );
 
+    HRESULT _LogCallTrace( FunctionID functionID );
+    HRESULT _GetNameFromElementType( CorElementType elementType, __out_ecount(buflen) WCHAR *buffer, size_t buflen );
+    bool _ClassHasFinalizeMethod(IMetaDataImport *pMetaDataImport, mdToken classToken, DWORD *pdwAttr);
+    bool _ClassOverridesFinalize(IMetaDataImport *pMetaDataImport, mdToken classToken);
+    bool _ClassReintroducesFinalize(IMetaDataImport *pMetaDataImport, mdToken classToken);
+    bool _ClassIsFinalizable(ModuleID moduleID, mdToken classToken);
+    HRESULT _InsertGCClass(ClassInfo **ppClassInfo, ClassID classID);
+    void _GenerationBounds(BOOL beforeCollection, BOOL induced, int generation);
+
 private:
     ULONG  m_GCcounter[COR_PRF_GC_GEN_2 + 1];
     DWORD  m_condemnedGeneration[2];
+    USHORT m_condemnedGenerationIndex;
 
     // various counters
     LONG m_refCount;
     DWORD m_dwShutdown;
+    DWORD m_callStackCount;
 
     // counters
     LONG m_totalClasses;
@@ -447,6 +463,7 @@ private:
     BOOL m_bShutdown;
     BOOL m_bDumpGCInfo;
     DWORD m_dwProcessId;
+    BOOL m_bDumpCompleted;
     DWORD m_dwSkipObjects;
     DWORD m_dwFramesToPrint;
     WCHAR *m_classToMonitor;
@@ -459,6 +476,8 @@ private:
     // file stuff
     FILE *m_stream;
     DWORD m_firstTickCount;
+    DWORD m_lastTickCount;
+    DWORD m_lastClockTick;
 
     // names for the events and the callbacks
     char m_logFileName[MAX_LENGTH+1];
