@@ -8,6 +8,28 @@
 #define InitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount) \
     InitializeCriticalSectionEx(lpCriticalSection, dwSpinCount, 0)
 
+EXTERN_C void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
+
+EXTERN_C void __stdcall EnterStub(FunctionIDOrClientID functionIDOrClientID)
+{
+    LogProfilerActivity("EnterStub\n");
+    ProfilerCallback::Enter(functionIDOrClientID.functionID);
+}
+
+EXTERN_C void __stdcall LeaveStub(FunctionIDOrClientID functionIDOrClientID)
+{
+    LogProfilerActivity("LeaveStub\n");
+    ProfilerCallback::Leave(functionIDOrClientID.functionID);
+}
+
+EXTERN_C void __stdcall TailcallStub(FunctionIDOrClientID functionIDOrClientID)
+{
+    LogProfilerActivity("TailcallStub\n");
+    ProfilerCallback::Tailcall(functionIDOrClientID.functionID);
+}
+
 static bool ContainsHighUnicodeCharsOrQuoteChar(__in_ecount(strLen) WCHAR *str, size_t strLen, WCHAR quoteChar)
 {
     for (size_t i = 0; i < strLen; i++)
@@ -295,6 +317,34 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
     return hr;
 }
 
+__forceinline void ProfilerCallback::Enter(FunctionID functionID)
+{
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+
+    if (pThreadInfo != NULL)
+        pThreadInfo->m_pThreadCallStack->Push(functionID);
+
+    //
+    // log tracing info if requested
+    //
+    if ( g_pCallbackObject->m_dwMode & (DWORD)TRACE )
+        g_pCallbackObject->_LogCallTrace(functionID);
+}
+
+__forceinline void ProfilerCallback::Leave(FunctionID functionID)
+{
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+    if (pThreadInfo != NULL)
+        pThreadInfo->m_pThreadCallStack->Pop();
+}
+
+__forceinline void ProfilerCallback::Tailcall(FunctionID functionID)
+{
+    ThreadInfo *pThreadInfo = GetThreadInfo();
+    if (pThreadInfo != NULL)
+        pThreadInfo->m_pThreadCallStack->Pop();
+}
+
 __forceinline ThreadInfo *ProfilerCallback::GetThreadInfo()
 {
     DWORD lastError = GetLastError();
@@ -395,17 +445,17 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
         return hr;
     }
 
-    // hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3(
-    //     (FunctionEnter3 *)EnterNaked3,
-    //     (FunctionLeave3 *)LeaveNaked3,
-    //     (FunctionTailcall3 *)TailcallNaked3
-    // );
-    //
-    // if (FAILED(hr))
-    // {
-    //     Failure( "ICorProfilerInfo::SetEnterLeaveFunctionHooks() FAILED" );
-    //     return hr;
-    // }
+    hr = m_pProfilerInfo3->SetEnterLeaveFunctionHooks3(
+        (FunctionEnter3 *)EnterNaked3,
+        (FunctionLeave3 *)LeaveNaked3,
+        (FunctionTailcall3 *)TailcallNaked3
+    );
+
+    if (FAILED(hr))
+    {
+        Failure( "ICorProfilerInfo::SetEnterLeaveFunctionHooks() FAILED" );
+        return hr;
+    }
 
     hr = Init(&profConfig);
     if ( FAILED( hr ) )

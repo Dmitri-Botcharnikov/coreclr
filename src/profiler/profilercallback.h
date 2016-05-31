@@ -64,6 +64,10 @@ public:
     HRESULT Init(ProfConfig * pProfConfig);
 
 public:
+    // used by function hooks, they have to be static
+    static void  Enter( FunctionID functionID );
+    static void  Leave( FunctionID functionID );
+    static void  Tailcall( FunctionID functionID );
     static ThreadInfo *GetThreadInfo();
 
 public:
