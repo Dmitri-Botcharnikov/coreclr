@@ -7160,6 +7160,8 @@ void CodeGen::genProfilingEnterCallback(regNumber  initReg,
 #elif defined(_TARGET_AMD64_)
     inst_RV(INS_push, REG_RDI, TYP_REF);
     inst_RV(INS_push, REG_RSI, TYP_REF);
+    instGen_Set_Reg_To_Imm(EA_8BYTE, REG_RDI,
+	(ssize_t)compiler->compProfilerMethHnd);
     // This will emit either 
     // "call ip-relative 32-bit offset" or 
     // "mov rax, helper addr; call rax"
