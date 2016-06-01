@@ -9,7 +9,7 @@
 NESTED_ENTRY EnterNaked3, _TEXT, NoHandler
     push    {r0-r7, lr}
     bl      C_FUNC(EnterStub)
-    pop     {r0-r7, lr}
+    pop     {r0-r7, pc}
 NESTED_END EnterNaked3, _TEXT
 
 //
@@ -18,7 +18,7 @@ NESTED_END EnterNaked3, _TEXT
 NESTED_ENTRY LeaveNaked3, _TEXT, NoHandler
     push    {r0-r7, lr}
     bl      C_FUNC(LeaveStub)
-    pop     {r0-r7, lr}
+    pop     {r0-r7, pc}
 NESTED_END LeaveNaked3, _TEXT
 
 //
@@ -27,5 +27,5 @@ NESTED_END LeaveNaked3, _TEXT
 NESTED_ENTRY TailcallNaked3, _TEXT, NoHandler
     push    {r0-r7, lr}
     bl      C_FUNC(TailcallStub)
-    pop     {r0-r7, lr}
+    pop     {r0-r7, pc}
 NESTED_END TailcallNaked3, _TEXT
