@@ -20,6 +20,10 @@ if(CLR_CMAKE_TARGET_ARCH_AMD64)
   set(PROFILER_SOURCES_ASM
     ${ARCH_SOURCES_DIR}/asmhelpers.S
   )
+elseif(CLR_CMAKE_TARGET_ARCH_ARM)
+  set(PROFILER_SOURCES_ASM
+    ${ARCH_SOURCES_DIR}/asmhelpers.S
+  )
 endif()
 
 add_library_clr(coreprof
