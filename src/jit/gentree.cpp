@@ -238,13 +238,13 @@ void                GenTree::InitNodeSize()
 
     // Now set all of the appropriate entries to 'large'
 
-    // On ARM and System V struct returning there
-    // is code that does GT_ASG-tree.CopyObj call.
+    // On ARM32, ARM64 and System V for struct returning 
+    // there is code that does GT_ASG-tree.CopyObj call.
     // CopyObj is a large node and the GT_ASG is small, which triggers an exception.
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     GenTree::s_gtNodeSizes[GT_ASG             ] = TREE_NODE_SZ_LARGE;
     GenTree::s_gtNodeSizes[GT_RETURN          ] = TREE_NODE_SZ_LARGE;
-#endif // defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
     GenTree::s_gtNodeSizes[GT_CALL            ] = TREE_NODE_SZ_LARGE;
     GenTree::s_gtNodeSizes[GT_CAST            ] = TREE_NODE_SZ_LARGE;
@@ -276,12 +276,12 @@ void                GenTree::InitNodeSize()
 #ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
     GenTree::s_gtNodeSizes[GT_PUTARG_STK      ] = TREE_NODE_SZ_LARGE;
 #endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     // In importer for Hfa and register returned structs we rewrite GT_ASG to GT_COPYOBJ/GT_CPYBLK
     // Make sure the sizes agree.
     assert(GenTree::s_gtNodeSizes[GT_COPYOBJ] <= GenTree::s_gtNodeSizes[GT_ASG]);
     assert(GenTree::s_gtNodeSizes[GT_COPYBLK] <= GenTree::s_gtNodeSizes[GT_ASG]);
-#endif // !(defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING))
+#endif // !(defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING))
 
     assert(GenTree::s_gtNodeSizes[GT_RETURN] == GenTree::s_gtNodeSizes[GT_ASG]);
 
@@ -1314,7 +1314,7 @@ GenTreeCall::GetOtherRegMask() const
 {
     regMaskTP resultMask = RBM_NONE;
 
-#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+#if FEATURE_MULTIREG_RET
     for (unsigned i = 0; i < MAX_RET_REG_COUNT - 1; ++i)
     {
         if (gtOtherRegs[i] != REG_NA)
@@ -2837,7 +2837,7 @@ bool                Compiler::gtIsLikelyRegVar(GenTree * tree)
  *      3. gtRsvdRegs to the set of fixed registers trashed by the tree
  *      4. gtFPlvl to the "floating point depth" value for node, i.e. the max. number
  *         of operands the tree will push on the x87 (coprocessor) stack. Also sets
- *         genFPstkLevel, tmpDoubleSpillMax, and possibly fgFPstLvlRedo.
+ *         genFPstkLevel, tmpDoubleSpillMax, and possibly gtFPstLvlRedo.
  *      5. Sometimes sets GTF_ADDRMODE_NO_CSE on nodes in the tree.
  *      6. DEBUG-only: clears GTF_MORPHED.
  */
@@ -3333,16 +3333,12 @@ COMMON_CNS:
 
             case GT_MKREFANY:
             case GT_OBJ:
-                level  = gtSetEvalOrder(tree->gtOp.gtOp1);
-                ftreg |= tree->gtOp.gtOp1->gtRsvdRegs;
                 // We estimate the cost of a GT_OBJ or GT_MKREFANY to be two loads (GT_INDs)
                 costEx = 2*IND_COST_EX;
                 costSz = 2*2;
                 break;
 
             case GT_BOX:
-                level  = gtSetEvalOrder(tree->gtBox.BoxOp());
-                ftreg |= tree->gtBox.BoxOp()->gtRsvdRegs;
                 // We estimate the cost of a GT_BOX to be two stores (GT_INDs)
                 costEx = 2*IND_COST_EX;
                 costSz = 2*2;
@@ -3766,17 +3762,6 @@ COMMON_CNS:
                 costEx = 20;
                 costSz += 2;
 
-#if     LONG_MATH_REGPARAM
-                if  (tree->gtType == TYP_LONG)
-                {
-                    /* Encourage the second operand to be evaluated (into EBX/ECX) first*/
-                    lvlb += 3;
-
-                    // The second operand must be evaluated (into EBX/ECX) */
-                    ftreg |= RBM_EBX|RBM_ECX;
-                }
-#endif
-
                 // Encourage the first operand to be evaluated (into EAX/EDX) first */
                 lvlb -= 3;
 
@@ -3801,19 +3786,6 @@ COMMON_CNS:
                 costEx += 3;
                 costSz += 2;
 
-#if     LONG_MATH_REGPARAM
-
-                if  (tree->gtType == TYP_LONG)
-                {
-                    /* Encourage the second operand to be evaluated (into EBX/ECX) first*/
-                    lvlb += 3;
-                    
-                    // The second operand must be evaluated (into EBX/ECX) */
-                    ftreg |= RBM_EBX|RBM_ECX;
-                }
-
-#else // !LONG_MATH_REGPARAM
-
                 if (tree->gtOverflow())
                 {
                     /* Overflow check are more expensive */
@@ -3835,8 +3807,6 @@ COMMON_CNS:
                     costEx += 4;
                 }
 #endif //  _TARGET_X86_
-
-#endif // !LONG_MATH_REGPARAM
             }
             break;
 
@@ -4272,7 +4242,7 @@ COMMON_CNS:
 #if FEATURE_STACK_FP_X87
                     /* We may have to recompute FP levels */
                     if  (op1->gtFPlvl || op2->gtFPlvl)
-                        fgFPstLvlRedo = true;
+                        gtFPstLvlRedo = true;
 #endif // FEATURE_STACK_FP_X87
                     break;
 
@@ -4311,7 +4281,7 @@ COMMON_CNS:
 #if FEATURE_STACK_FP_X87
                     /* We may have to recompute FP levels */
                     if  (op1->gtFPlvl || op2->gtFPlvl)
-                        fgFPstLvlRedo = true;
+                        gtFPstLvlRedo = true;
 #endif // FEATURE_STACK_FP_X87
 
                     break;
@@ -4603,6 +4573,252 @@ DONE:
 #ifdef _PREFAST_
 #pragma warning(pop)
 #endif
+
+#if FEATURE_STACK_FP_X87
+
+/*****************************************************************************/
+void                Compiler::gtComputeFPlvls(GenTreePtr tree)
+{
+    genTreeOps      oper;
+    unsigned        kind;
+    bool            isflt;
+    unsigned        savFPstkLevel;
+
+    noway_assert(tree);
+    noway_assert(tree->gtOper != GT_STMT);
+
+    /* Figure out what kind of a node we have */
+
+    oper  = tree->OperGet();
+    kind  = tree->OperKind();
+    isflt = varTypeIsFloating(tree->TypeGet()) ? 1 : 0;
+
+    /* Is this a constant or leaf node? */
+
+    if  (kind & (GTK_CONST|GTK_LEAF))
+    {
+        codeGen->genFPstkLevel += isflt;
+        goto DONE;
+    }
+
+    /* Is it a 'simple' unary/binary operator? */
+
+    if  (kind & GTK_SMPOP)
+    {
+        GenTreePtr      op1 = tree->gtOp.gtOp1;
+        GenTreePtr      op2 = tree->gtGetOp2();
+
+        /* Check for some special cases */
+
+        switch (oper)
+        {
+        case GT_IND:
+
+            gtComputeFPlvls(op1);
+
+            /* Indirect loads of FP values push a new value on the FP stack */
+
+            codeGen->genFPstkLevel += isflt;
+            goto DONE;
+
+        case GT_CAST:
+
+            gtComputeFPlvls(op1);
+
+            /* Casts between non-FP and FP push on / pop from the FP stack */
+
+            if  (varTypeIsFloating(op1->TypeGet()))
+            {
+                if  (isflt == false)
+                    codeGen->genFPstkLevel--;
+            }
+            else
+            {
+                if  (isflt != false)
+                    codeGen->genFPstkLevel++;
+            }
+
+            goto DONE;
+
+        case GT_LIST:   /* GT_LIST presumably part of an argument list */
+        case GT_COMMA:  /* Comma tosses the result of the left operand */
+
+            savFPstkLevel = codeGen->genFPstkLevel;
+            gtComputeFPlvls(op1);
+            codeGen->genFPstkLevel = savFPstkLevel;
+
+            if  (op2)
+                gtComputeFPlvls(op2);
+
+            goto DONE;
+
+        default:
+            break;
+        }
+
+        if  (!op1)
+        {
+            if  (!op2)
+                goto DONE;
+
+            gtComputeFPlvls(op2);
+            goto DONE;
+        }
+
+        if  (!op2)
+        {
+            gtComputeFPlvls(op1);
+            if (oper == GT_ADDR)
+            {
+                /* If the operand was floating point pop the value from the stack */
+                if (varTypeIsFloating(op1->TypeGet()))
+                {
+                    noway_assert(codeGen->genFPstkLevel);
+                    codeGen->genFPstkLevel--;
+                }
+            }
+
+            // This is a special case to handle the following
+            // optimization: conv.i4(round.d(d)) -> round.i(d)
+
+            if (oper== GT_INTRINSIC && tree->gtIntrinsic.gtIntrinsicId == CORINFO_INTRINSIC_Round &&
+                tree->TypeGet()==TYP_INT)
+            {
+                codeGen->genFPstkLevel--;
+            }
+
+            goto DONE;
+        }
+
+        /* FP assignments need a bit special handling */
+
+        if  (isflt && (kind & GTK_ASGOP))
+        {
+            /* The target of the assignment won't get pushed */
+
+            if  (tree->gtFlags & GTF_REVERSE_OPS)
+            {
+                gtComputeFPlvls(op2);
+                gtComputeFPlvls(op1);
+                 op1->gtFPlvl--;
+                codeGen->genFPstkLevel--;
+            }
+            else
+            {
+                gtComputeFPlvls(op1);
+                op1->gtFPlvl--;
+                codeGen->genFPstkLevel--;
+                gtComputeFPlvls(op2);
+            }
+
+            codeGen->genFPstkLevel--;
+            goto DONE;
+        }
+
+        /* Here we have a binary operator; visit operands in proper order */
+
+        if  (tree->gtFlags & GTF_REVERSE_OPS)
+        {
+            gtComputeFPlvls(op2);
+            gtComputeFPlvls(op1);
+        }
+        else
+        {
+            gtComputeFPlvls(op1);
+            gtComputeFPlvls(op2);
+        }
+
+        /*
+            Binary FP operators pop 2 operands and produce 1 result;
+            assignments consume 1 value and don't produce any.
+         */
+
+        if  (isflt)
+            codeGen->genFPstkLevel--;
+
+        /* Float compares remove both operands from the FP stack */
+
+        if  (kind & GTK_RELOP)
+        {
+            if  (varTypeIsFloating(op1->TypeGet()))
+                codeGen->genFPstkLevel -= 2;
+        }
+
+        goto DONE;
+    }
+
+    /* See what kind of a special operator we have here */
+
+    switch  (oper)
+    {
+    case GT_FIELD:
+        gtComputeFPlvls(tree->gtField.gtFldObj);
+        codeGen->genFPstkLevel += isflt;
+        break;
+
+    case GT_CALL:
+
+        if  (tree->gtCall.gtCallObjp)
+            gtComputeFPlvls(tree->gtCall.gtCallObjp);
+
+        if  (tree->gtCall.gtCallArgs)
+        {
+            savFPstkLevel = codeGen->genFPstkLevel;
+            gtComputeFPlvls(tree->gtCall.gtCallArgs);
+            codeGen->genFPstkLevel = savFPstkLevel;
+        }
+
+        if  (tree->gtCall.gtCallLateArgs)
+        {
+            savFPstkLevel = codeGen->genFPstkLevel;
+            gtComputeFPlvls(tree->gtCall.gtCallLateArgs);
+            codeGen->genFPstkLevel = savFPstkLevel;
+        }
+
+        codeGen->genFPstkLevel += isflt;
+        break;
+
+    case GT_ARR_ELEM:
+
+        gtComputeFPlvls(tree->gtArrElem.gtArrObj);
+
+        unsigned dim;
+        for (dim = 0; dim < tree->gtArrElem.gtArrRank; dim++)
+            gtComputeFPlvls(tree->gtArrElem.gtArrInds[dim]);
+
+        /* Loads of FP values push a new value on the FP stack */
+        codeGen->genFPstkLevel += isflt;
+        break;
+
+    case GT_CMPXCHG:
+        //Evaluate the trees left to right
+        gtComputeFPlvls(tree->gtCmpXchg.gtOpLocation);
+        gtComputeFPlvls(tree->gtCmpXchg.gtOpValue);
+        gtComputeFPlvls(tree->gtCmpXchg.gtOpComparand);
+        noway_assert(!isflt);
+        break;
+
+    case GT_ARR_BOUNDS_CHECK:
+        gtComputeFPlvls(tree->gtBoundsChk.gtArrLen);
+        gtComputeFPlvls(tree->gtBoundsChk.gtIndex);
+        noway_assert(!isflt);
+        break;
+
+#ifdef DEBUG
+    default:
+        noway_assert(!"Unhandled special operator in gtComputeFPlvls()");
+        break;
+#endif
+    }
+
+DONE:
+
+    noway_assert((unsigned char)codeGen->genFPstkLevel == codeGen->genFPstkLevel);
+
+    tree->gtFPlvl = (unsigned char)codeGen->genFPstkLevel;
+}
+
+#endif // FEATURE_STACK_FP_X87
 
 
 /*****************************************************************************
@@ -5356,8 +5572,10 @@ GenTreeCall*          Compiler::gtNewCallNode(gtCallTypes     callType,
     node->gtCall.gtEntryPoint.addr = nullptr;
 #endif
 
-#ifdef DEBUG
+#if defined(DEBUG) || defined(INLINE_DATA)
+    // These get updated after call node is built.
     node->gtCall.gtInlineObservation = InlineObservation::CALLEE_UNUSED_INITIAL;
+    node->gtCall.gtRawILOffset = BAD_IL_OFFSET;
 #endif
 
 #ifdef DEBUGGING_SUPPORT
@@ -5630,7 +5848,7 @@ GenTreePtr          Compiler::gtNewAssignNode(GenTreePtr dst, GenTreePtr src DEB
 
     // ARM has HFA struct return values, HFA return values are received in registers from GT_CALL,
     // using struct assignment.
-#ifdef _TARGET_ARM_
+#ifdef FEATURE_HFA
     assert(isPhiDefn || type != TYP_STRUCT || IsHfa(dst) || IsHfa(src));
 #elif defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     // You need to use GT_COPYBLK for assigning structs
@@ -7386,6 +7604,10 @@ Compiler::gtDispNodeName(GenTree *tree)
     {
         sprintf_s(bufp, sizeof(buf), " %s(h)%c", name, 0);
     }
+    else if (tree->gtOper == GT_PUTARG_STK)
+    {
+        sprintf_s(bufp, sizeof(buf), " %s [+0x%02x]%c", name, tree->AsPutArgStk()->getArgOffset(), 0);
+    }
     else if (tree->gtOper == GT_CALL)
     {
         const char *  callType = "call";
@@ -9021,14 +9243,10 @@ void                Compiler::gtGetArgMsg(GenTreePtr        call,
             {
                 sprintf_s(bufp, bufLength, "arg%d out+%02x%c", argNum, curArgTabEntry->slotNum * TARGET_POINTER_SIZE, 0);
             }
-            else if (listCount == 1)
+            else // listCount is 0,1,2 or 3
             {
-                sprintf_s(bufp, bufLength, "arg%d hi +%02x%c", argNum, (curArgTabEntry->slotNum + 1) * TARGET_POINTER_SIZE, 0);
-            }
-            else
-            {
-                assert(listCount == 0);
-                sprintf_s(bufp, bufLength, "arg%d lo +%02x%c", argNum, (curArgTabEntry->slotNum + 0) * TARGET_POINTER_SIZE, 0);
+                assert(listCount <= MAX_ARG_REG_COUNT);
+                sprintf_s(bufp, bufLength, "arg%d out+%02x%c", argNum, (curArgTabEntry->slotNum + listCount) * TARGET_POINTER_SIZE, 0);
             }
 #else
             sprintf_s(bufp, bufLength, "arg%d on STK%c", argNum, 0);
@@ -9090,22 +9308,29 @@ void                Compiler::gtGetLateArgMsg(GenTreePtr        call,
         }
         else
         {
-#ifdef _TARGET_ARM64_
-            if (curArgTabEntry->numRegs == 2)
+#if FEATURE_MULTIREG_ARGS
+            if (curArgTabEntry->numRegs >= 2)
             {
-                regNumber argReg2 = REG_NEXT(argReg);
+                regNumber otherRegNum;
+#if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+                assert(curArgTabEntry->numRegs == 2);
+                otherRegNum = curArgTabEntry->otherRegNum;
+#else 
+                otherRegNum = (regNumber)(((unsigned)curArgTabEntry->regNum) + curArgTabEntry->numRegs - 1);
+#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
+
                 if (listCount == -1)
                 {
-                    sprintf_s(bufp, bufLength, "arg%d %s,%s%c", curArgTabEntry->argNum, compRegVarName(argReg), compRegVarName(argReg2), 0);
+                    char seperator = (curArgTabEntry->numRegs == 2) ? ',' : '-';
+
+                    sprintf_s(bufp, bufLength, "arg%d %s%c%s%c", curArgTabEntry->argNum, 
+                        compRegVarName(argReg), seperator, compRegVarName(otherRegNum), 0);
                 }
-                else if (listCount == 1)
+                else // listCount is 0,1,2 or 3
                 {
-                    sprintf_s(bufp, bufLength, "arg%d hi %s%c", curArgTabEntry->argNum, compRegVarName(argReg2), 0);
-                }
-                else 
-                {
-                    assert(listCount == 0);
-                    sprintf_s(bufp, bufLength, "arg%d lo %s%c", curArgTabEntry->argNum, compRegVarName(argReg), 0);
+                    assert(listCount <= MAX_ARG_REG_COUNT);
+                    regNumber curReg = (listCount == 1) ? otherRegNum : (regNumber)((unsigned)(argReg)+listCount);
+                    sprintf_s(bufp, bufLength, "arg%d m%d %s%c", curArgTabEntry->argNum, listCount, compRegVarName(curReg), 0);
                 }
             }
             else
@@ -13738,9 +13963,10 @@ bool GenTree::isCommutativeSIMDIntrinsic()
 void ReturnTypeDesc::Initialize(Compiler* comp, CORINFO_CLASS_HANDLE retClsHnd)
 {
     assert(!m_inited);
-    assert(retClsHnd != NO_CLASS_HANDLE);
 
 #ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+    assert(retClsHnd != NO_CLASS_HANDLE);
+
     SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR structDesc;
     comp->eeGetSystemVAmd64PassStructInRegisterDescriptor(retClsHnd, &structDesc);
 
@@ -13758,11 +13984,16 @@ void ReturnTypeDesc::Initialize(Compiler* comp, CORINFO_CLASS_HANDLE retClsHnd)
         }
     }
 
+#elif defined(_TARGET_X86_)
+    // TODO-X86: Assumes we are only using ReturnTypeDesc for longs on x86. Will
+    // need to be updated in the future to handle other return types
+    m_regType0 = TYP_INT;
+    m_regType1 = TYP_INT;
+#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
+
 #ifdef DEBUG
     m_inited = true;
 #endif
-
-#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
 }
 
 //-------------------------------------------------------------------
@@ -13780,8 +14011,9 @@ void ReturnTypeDesc::Initialize(Compiler* comp, CORINFO_CLASS_HANDLE retClsHnd)
 //     and yet to be implemented for other multi-reg return
 //     targets (Arm64/Arm32/x86).
 //
-// TODO-ARM: Implement this routine to support HFA returns.
-// TODO-X86: Implement this routine to support long returns.
+// TODO-ARM:   Implement this routine to support HFA returns.
+// TODO-ARM64: Implement this routine to support HFA returns.
+// TODO-X86:   Implement this routine to support long returns.
 regNumber ReturnTypeDesc::GetABIReturnReg(unsigned idx)
 {
     unsigned count = GetReturnRegCount();
@@ -13832,6 +14064,16 @@ regNumber ReturnTypeDesc::GetABIReturnReg(unsigned idx)
             }
         }
     }
+
+#elif defined(_TARGET_X86_)
+    if (idx == 0)
+    {
+        resultReg = REG_LNGRET_LO;
+    }
+    else if (idx == 1)
+    {
+        resultReg = REG_LNGRET_HI;
+    }
 #endif //FEATURE_UNIX_AMD64_STRUCT_PASSING
 
     assert(resultReg != REG_NA);
@@ -13854,8 +14096,9 @@ regNumber ReturnTypeDesc::GetABIReturnReg(unsigned idx)
 //    This routine can be used when the caller is not particular about the order
 //    of return registers and wants to know the set of return registers.
 //
-// TODO-ARM: Implement this routine to support HFA returns.
-// TODO-X86: Implement this routine to support long returns.
+// TODO-ARM:   Implement this routine to support HFA returns.
+// TODO-ARM64: Implement this routine to support HFA returns.
+// TODO-X86:   Implement this routine to support long returns.
 //
 //static
 regMaskTP ReturnTypeDesc::GetABIReturnRegs()

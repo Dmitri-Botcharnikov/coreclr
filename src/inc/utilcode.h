@@ -29,6 +29,7 @@
 #include "winnls.h"
 #include "check.h"
 #include "safemath.h"
+#include "new.hpp"
 
 #ifdef PAL_STDCPP_COMPAT
 #include <type_traits>
@@ -62,6 +63,7 @@ const WCHAR kWatsonName2[] = W("drwtsn32");
 #define CoreLibNameLen 22
 #define CoreLibSatelliteName_A "System.Private.CoreLib.resources"
 #define CoreLibSatelliteNameLen 32
+#define LegacyCoreLibName_A "mscorlib"
 #else // !defined(FEATURE_CORECLR)
 #define CoreLibName_W W("mscorlib")
 #define CoreLibName_IL_W W("mscorlib.dll")
@@ -74,6 +76,7 @@ const WCHAR kWatsonName2[] = W("drwtsn32");
 #define CoreLibNameLen 8
 #define CoreLibSatelliteName_A "mscorlib.resources"
 #define CoreLibSatelliteNameLen 18
+#define LegacyCoreLibName_A "mscorlib"
 #endif // defined(FEATURE_CORECLR)
 
 class StringArrayList;
@@ -210,12 +213,6 @@ typedef LPSTR   LPUTF8;
 #ifndef sizeofmember
 // Returns the size of a class or struct member.
 #define sizeofmember(c,m) (sizeof(((c*)0)->m))
-#endif
-
-#if defined(_MSC_VER) && _MSC_VER < 1900
-#define NOEXCEPT
-#else
-#define NOEXCEPT noexcept
 #endif
 
 //=--------------------------------------------------------------------------=

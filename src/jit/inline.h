@@ -218,7 +218,7 @@ class InlinePolicy
 public:
 
     // Factory method for getting policies
-    static InlinePolicy* GetPolicy(Compiler* compiler, InlineContext* context, bool isPrejitRoot);
+    static InlinePolicy* GetPolicy(Compiler* compiler, bool isPrejitRoot);
 
     // Obligatory virtual dtor
     virtual ~InlinePolicy() {}
@@ -234,6 +234,10 @@ public:
     virtual void NoteBool(InlineObservation obs, bool value) = 0;
     virtual void NoteFatal(InlineObservation obs) = 0;
     virtual void NoteInt(InlineObservation obs, int value) = 0;
+
+    // Optional observations. Most policies ignore these.
+    virtual void NoteContext(InlineContext* context) { (void) context; }
+    virtual void NoteOffset(IL_OFFSETX offset) { (void) offset; }
 
     // Policy determinations
     virtual void DetermineProfitability(CORINFO_METHOD_INFO* methodInfo) = 0;
@@ -289,7 +293,7 @@ public:
     // particular call for inlining.
     InlineResult(Compiler*              compiler,
                  GenTreeCall*           call,
-                 InlineContext*         inlineContext,
+                 GenTreeStmt*           stmt,
                  const char*            description);
 
     // Construct a new InlineResult to evaluate a particular
@@ -622,6 +626,12 @@ public:
         return m_CodeSizeEstimate;
     }
 
+    // Get the offset of the call site
+    IL_OFFSETX GetOffset() const
+    {
+        return m_Offset;
+    }
+
     // True if this is the root context
     bool IsRoot() const
     {
@@ -684,6 +694,13 @@ public:
     // Root context
     InlineContext* GetRootContext();
 
+    // Context for the last sucessful inline
+    // (or root if no inlines)
+    InlineContext* GetLastContext() const
+    {
+        return m_LastContext;
+    }
+
     // Get IL size for maximum allowable inline
     unsigned GetMaxInlineILSize() const
     {
@@ -731,10 +748,25 @@ public:
 
     // Dump data-format description of inlines done so far.
     void DumpData();
+    void DumpDataEnsurePolicyIsSet();
+    void DumpDataHeader(FILE* file);
+    void DumpDataSchema(FILE* file);
+    void DumpDataContents(FILE* file);
 
     // Dump xml-formatted description of inlines
     void DumpXml(FILE* file = stderr, unsigned indent = 0);
     static void FinalizeXml(FILE* file = stderr);
+
+    // Cache for file position of this method in the inline xml
+    long GetMethodXmlFilePosition()
+    {
+        return m_MethodXmlFilePosition;
+    }
+
+    void SetMethodXmlFilePosition(long val)
+    {
+        m_MethodXmlFilePosition = val;
+    }
 
 #endif // defined(DEBUG) || defined(INLINE_DATA)
 
@@ -773,13 +805,15 @@ private:
     int EstimateSize(InlineContext* context);
 
 #if defined(DEBUG) || defined(INLINE_DATA)
-    static bool    s_HasDumpedDataHeader;
-    static bool    s_HasDumpedXmlHeader;
+    static bool          s_HasDumpedDataHeader;
+    static bool          s_HasDumpedXmlHeader;
+    static CritSecObject s_XmlWriterLock;
 #endif // defined(DEBUG) || defined(INLINE_DATA)
 
     Compiler*      m_Compiler;
     InlineContext* m_RootContext;
     InlinePolicy*  m_LastSuccessfulPolicy;
+    InlineContext* m_LastContext;
     unsigned       m_CandidateCount;
     unsigned       m_InlineAttemptCount;
     unsigned       m_InlineCount;
@@ -792,6 +826,11 @@ private:
     int            m_InitialSizeEstimate;
     int            m_CurrentSizeEstimate;
     bool           m_HasForceViaDiscretionary;
+
+#if defined(DEBUG) || defined(INLINE_DATA)
+    long           m_MethodXmlFilePosition;
+#endif // defined(DEBUG) || defined(INLINE_DATA)
+
 };
 
 #endif // _INLINE_H_

@@ -29,20 +29,15 @@ usage()
     exit 1
 }
 
-initDistroName()
+initDistroRid()
 {
     if [ "$__BuildOS" == "Linux" ]; then
-        # Detect Distro
-        if [ "$(cat /etc/*-release | grep -cim1 ubuntu)" -eq 1 ]; then
-            export __DistroName=ubuntu
-        elif [ "$(cat /etc/*-release | grep -cim1 centos)" -eq 1 ]; then
-            export __DistroName=rhel
-        elif [ "$(cat /etc/*-release | grep -cim1 rhel)" -eq 1 ]; then
-            export __DistroName=rhel
-        elif [ "$(cat /etc/*-release | grep -cim1 debian)" -eq 1 ]; then
-            export __DistroName=debian
+        if [ ! -e /etc/os-release ]; then
+            echo "WARNING: Can not determine runtime id for current distro."
+            export __DistroRid=""
         else
-            export __DistroName=""
+            source /etc/os-release
+            export __DistroRid="$ID.$VERSION_ID-$__HostArch"
         fi
     fi
 }
@@ -82,7 +77,7 @@ check_prereqs()
     hash cmake 2>/dev/null || { echo >&2 "Please install cmake before running this script"; exit 1; }
 
     # Check for clang
-    hash clang-$__ClangMajorVersion.$__ClangMinorVersion 2>/dev/null ||  hash clang$__ClangMajorVersion$__ClangMinorVersion 2>/dev/null ||  hash clang 2>/dev/null || { echo >&2 "Please install clang before running this script"; exit 1; }
+    hash clang-$__ClangMajorVersion.$__ClangMinorVersion 2>/dev/null ||  hash clang$__ClangMajorVersion$__ClangMinorVersion 2>/dev/null ||  hash clang 2>/dev/null || { echo >&2 "Please install clang-$__ClangMajorVersion.$__ClangMinorVersion before running this script"; exit 1; }
 
 }
 
@@ -214,31 +209,35 @@ isMSBuildOnNETCoreSupported()
     # This needs to be updated alongwith corresponding changes to netci.groovy.
     __isMSBuildOnNETCoreSupported=0
 
-    if [ "$__BuildArch" == "x64" ]; then
-        if [ "$__BuildOS" == "Linux" ]; then
-            if [ "$__DistroName" == "ubuntu" ]; then
-                __OSVersion=$(lsb_release -rs)
-                if [ "$__OSVersion" == "14.04" ]; then
+    if [ "$__HostArch" == "x64" ]; then
+        if [ "$__HostOS" == "Linux" ]; then
+            case "$__DistroRid" in
+                "centos.7-x64")
                     __isMSBuildOnNETCoreSupported=1
-                elif [ "$(cat /etc/*-release | grep -cim1 14.04)" -eq 1 ]; then
-                    # Linux Mint based on Ubuntu 14.04
+                    ;;
+                "debian.8-x64")
                     __isMSBuildOnNETCoreSupported=1
-                fi
-            elif [ "$__DistroName" == "rhel" ]; then
-                __isMSBuildOnNETCoreSupported=1
-            elif [ "$__DistroName" == "debian" ]; then
-                __isMSBuildOnNETCoreSupported=1
-            fi
-        elif [ "$__BuildOS" == "OSX" ]; then
+                    ;;
+                "fedora.23-x64")
+                    __isMSBuildOnNETCoreSupported=1
+                    ;;
+                "opensuse.13.2-x64")
+                    __isMSBuildOnNETCoreSupported=1
+                    ;;
+                "rhel.7.2-x64")
+                    __isMSBuildOnNETCoreSupported=1
+                    ;;
+                "ubuntu.14.04-x64")
+                    __isMSBuildOnNETCoreSupported=1
+                    ;;
+                "ubuntu.16.04-x64")
+                    __isMSBuildOnNETCoreSupported=1
+                    ;;
+                *)
+            esac
+        elif [ "$__HostOS" == "OSX" ]; then
             __isMSBuildOnNETCoreSupported=1
         fi
-    elif [ "$__BuildArch" == "arm" ] || [ "$__BuildArch" == "arm64" ] ; then
-        if [ "$__BuildOS" == "Linux" ]; then
-            if [ "$__DistroName" == "ubuntu" ]; then
-                __isMSBuildOnNETCoreSupported=1
-            fi
-        fi
-
     fi
 }
 
@@ -326,26 +325,17 @@ generate_NugetPackages()
         return
     fi
 
-    echo "Generating nuget packages for "$__BuildOS
-
     if [ $__SkipMSCorLib == 1 ]; then
         # Restore buildTools, since we skipped doing so with the mscorlib build.
-
         restoreBuildTools
 
        echo "Unable to generate Microsoft.NETCore.Runtime.CoreCLR nuget package since mscorlib was not built."
-    else
-        # Build the CoreCLR packages
-        $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/Microsoft.NETCore.Runtime.CoreCLR/Microsoft.NETCore.Runtime.CoreCLR.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$__LogsDir/Nuget_$__BuildOS__$__BuildArch__$__BuildType.log" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:__RootBinDir=$__RootBinDir /p:BuildNugetPackage=false /p:UseSharedCompilation=false
-
-        if [ $? -ne 0 ]; then
-            echo "Failed to generate Nuget packages."
-            exit 1
-        fi
     fi
 
-    # Build the JIT packages
-    $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/Microsoft.NETCore.Jit/Microsoft.NETCore.Jit.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$__LogsDir/Nuget_$__BuildOS__$__BuildArch__$__BuildType.log" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:BuildNugetPackage=false /p:__RootBinDir=$__RootBinDir /p:UseSharedCompilation=false
+    echo "Generating nuget packages for "$__BuildOS
+
+    # Build the packages
+    $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/packages.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$__LogsDir/Nuget_$__BuildOS__$__BuildArch__$__BuildType.log" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:__RootBinDir=$__RootBinDir /p:BuildNugetPackage=false /p:UseSharedCompilation=false
 
     if [ $? -ne 0 ]; then
         echo "Failed to generate Nuget packages."
@@ -408,31 +398,38 @@ OSName=$(uname -s)
 case $OSName in
     Linux)
         __BuildOS=Linux
+        __HostOS=Linux
         ;;
 
     Darwin)
         __BuildOS=OSX
+        __HostOS=OSX
         ;;
 
     FreeBSD)
         __BuildOS=FreeBSD
+        __HostOS=FreeBSD
         ;;
 
     OpenBSD)
         __BuildOS=OpenBSD
+        __HostOS=OpenBSD
         ;;
 
     NetBSD)
         __BuildOS=NetBSD
+        __HostOS=NetBSD
         ;;
 
     SunOS)
         __BuildOS=SunOS
+        __HostOS=SunOS
         ;;
 
     *)
         echo "Unsupported OS $OSName detected, configuring as if for Linux"
         __BuildOS=Linux
+        __HostOS=Linux
         ;;
 esac
 
@@ -462,7 +459,7 @@ __ClangMajorVersion=0
 __ClangMinorVersion=0
 __MSBuildPath=$__ProjectRoot/Tools/MSBuild.exe
 __NuGetPath="$__PackagesDir/NuGet.exe"
-__DistroName=""
+__DistroRid=""
 __cmakeargs=""
 __OfficialBuildIdArg=
 __SkipGenerateVersion=0
@@ -657,7 +654,7 @@ if [[ $__ConfigureOnly == 1 && $__SkipConfigure == 1 ]]; then
 fi
 
 # init the distro name
-initDistroName
+initDistroRid
 
 # Set the remaining variables based upon the determined build configuration
 __BinDir="$__RootBinDir/Product/$__BuildOS.$__BuildArch.$__BuildType"

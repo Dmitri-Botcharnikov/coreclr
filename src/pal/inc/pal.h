@@ -481,6 +481,7 @@ typedef long time_t;
 #define PAL_INITIALIZE_EXEC_ALLOCATOR               0x02
 #define PAL_INITIALIZE_STD_HANDLES                  0x04
 #define PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER     0x08
+#define PAL_INITIALIZE_DEBUGGER_EXCEPTIONS          0x10
 
 // PAL_Initialize() flags
 #define PAL_INITIALIZE                 (PAL_INITIALIZE_SYNC_THREAD | PAL_INITIALIZE_STD_HANDLES)
@@ -489,7 +490,7 @@ typedef long time_t;
 #define PAL_INITIALIZE_DLL             PAL_INITIALIZE_NONE       
 
 // PAL_InitializeCoreCLR() flags
-#define PAL_INITIALIZE_CORECLR         (PAL_INITIALIZE | PAL_INITIALIZE_EXEC_ALLOCATOR | PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER)
+#define PAL_INITIALIZE_CORECLR         (PAL_INITIALIZE | PAL_INITIALIZE_EXEC_ALLOCATOR | PAL_INITIALIZE_REGISTER_SIGTERM_HANDLER | PAL_INITIALIZE_DEBUGGER_EXCEPTIONS)
 
 typedef DWORD (PALAPI *PTHREAD_START_ROUTINE)(LPVOID lpThreadParameter);
 typedef PTHREAD_START_ROUTINE LPTHREAD_START_ROUTINE;
@@ -582,12 +583,12 @@ BOOL
 PALAPI
 PAL_NotifyRuntimeStarted();
 
+static const int MAX_DEBUGGER_TRANSPORT_PIPE_NAME_LENGTH = 64;
+
 PALIMPORT
-VOID
+void
 PALAPI
-PAL_CleanupTargetProcess(
-    IN int pid, 
-    IN UINT64 disambiguationKey);
+PAL_GetTransportPipeName(char *name, DWORD id, const char *suffix);
 
 PALIMPORT
 void
@@ -1688,13 +1689,6 @@ GetProcessTimes(
         OUT LPFILETIME lpExitTime,
         OUT LPFILETIME lpKernelTime,
         OUT LPFILETIME lpUserTime);
-
-PALIMPORT
-BOOL
-PALAPI
-GetProcessIdDisambiguationKey(
-        IN DWORD processId,
-        OUT UINT64 *disambiguationKey);
 
 #define MAXIMUM_WAIT_OBJECTS  64
 #define WAIT_OBJECT_0 0
@@ -2973,6 +2967,7 @@ typedef struct _KNONVOLATILE_CONTEXT_POINTERS {
 
 typedef struct _IMAGE_ARM_RUNTIME_FUNCTION_ENTRY {
     DWORD BeginAddress;
+    DWORD EndAddress;
     union {
         DWORD UnwindData;
         struct {
@@ -5786,11 +5781,11 @@ CoCreateGuid(OUT GUID * pguid);
 #define ungetc        PAL_ungetc
 #define setvbuf       PAL_setvbuf
 #define atol          PAL_atol
+#define labs          PAL_labs
 #define acos          PAL_acos
 #define asin          PAL_asin
 #define atan2         PAL_atan2
 #define exp           PAL_exp
-#define labs          PAL_labs
 #define log           PAL_log
 #define log10         PAL_log10
 #define pow           PAL_pow
@@ -6012,40 +6007,39 @@ unsigned int __cdecl _rotr(unsigned int value, int shift)
 }
 
 PALIMPORT int __cdecl abs(int);
-PALIMPORT double __cdecl fabs(double); 
 #ifndef PAL_STDCPP_COMPAT
 PALIMPORT LONG __cdecl labs(LONG);
-PALIMPORT double __cdecl fabs(double);
 #endif // !PAL_STDCPP_COMPAT
 // clang complains if this is declared with __int64
 PALIMPORT long long __cdecl llabs(long long);
 
-PALIMPORT double __cdecl sqrt(double);
-PALIMPORT double __cdecl log(double);
-PALIMPORT double __cdecl log10(double);
-PALIMPORT double __cdecl exp(double);
-PALIMPORT double __cdecl pow(double, double);
-PALIMPORT double __cdecl acos(double);
-PALIMPORT double __cdecl asin(double);
-PALIMPORT double __cdecl atan(double);
-PALIMPORT double __cdecl atan2(double,double);
-PALIMPORT double __cdecl cos(double);
-PALIMPORT double __cdecl sin(double);
-PALIMPORT double __cdecl tan(double);
-PALIMPORT double __cdecl cosh(double);
-PALIMPORT double __cdecl sinh(double);
-PALIMPORT double __cdecl tanh(double);
-PALIMPORT double __cdecl fmod(double, double);
-PALIMPORT float __cdecl fmodf(float, float);
-PALIMPORT double __cdecl floor(double);
-PALIMPORT double __cdecl ceil(double);
-PALIMPORT float __cdecl fabsf(float);
-PALIMPORT double __cdecl modf(double, double *);
-PALIMPORT float __cdecl modff(float, float *);
-
 PALIMPORT int __cdecl _finite(double);
 PALIMPORT int __cdecl _isnan(double);
 PALIMPORT double __cdecl _copysign(double, double);
+PALIMPORT double __cdecl acos(double);
+PALIMPORT double __cdecl asin(double);
+PALIMPORT double __cdecl atan(double);
+PALIMPORT double __cdecl atan2(double, double);
+PALIMPORT double __cdecl ceil(double);
+PALIMPORT double __cdecl cos(double);
+PALIMPORT double __cdecl cosh(double);
+PALIMPORT double __cdecl exp(double);
+PALIMPORT double __cdecl fabs(double);
+PALIMPORT double __cdecl floor(double);
+PALIMPORT double __cdecl fmod(double, double); 
+PALIMPORT double __cdecl log(double);
+PALIMPORT double __cdecl log10(double);
+PALIMPORT double __cdecl modf(double, double*);
+PALIMPORT double __cdecl pow(double, double);
+PALIMPORT double __cdecl sin(double);
+PALIMPORT double __cdecl sinh(double);
+PALIMPORT double __cdecl sqrt(double);
+PALIMPORT double __cdecl tan(double);
+PALIMPORT double __cdecl tanh(double);
+
+PALIMPORT float __cdecl fabsf(float);
+PALIMPORT float __cdecl fmodf(float, float); 
+PALIMPORT float __cdecl modff(float, float*);
 
 #ifndef PAL_STDCPP_COMPAT
 

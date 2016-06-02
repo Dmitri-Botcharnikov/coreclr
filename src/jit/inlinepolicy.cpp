@@ -15,7 +15,6 @@
 //
 // Arguments:
 //    compiler      - the compiler instance that will evaluate inlines
-//    inlineContext - the context of the inline
 //    isPrejitRoot  - true if this policy is evaluating a prejit root
 //
 // Return Value:
@@ -25,11 +24,8 @@
 //    Determines which of the various policies should apply,
 //    and creates (or reuses) a policy instance to use.
 
-InlinePolicy* InlinePolicy::GetPolicy(Compiler* compiler, InlineContext* inlineContext, bool isPrejitRoot)
+InlinePolicy* InlinePolicy::GetPolicy(Compiler* compiler, bool isPrejitRoot)
 {
-
-    // inlineContext only conditionally used below.
-    (void) inlineContext;
 
 #ifdef DEBUG
 
@@ -52,7 +48,7 @@ InlinePolicy* InlinePolicy::GetPolicy(Compiler* compiler, InlineContext* inlineC
 
     if (useReplayPolicy)
     {
-        return new (compiler, CMK_Inlining) ReplayPolicy(compiler, inlineContext, isPrejitRoot);
+        return new (compiler, CMK_Inlining) ReplayPolicy(compiler, isPrejitRoot);
     }
 
     // Optionally install the SizePolicy.
@@ -2066,20 +2062,23 @@ void SizePolicy::DetermineProfitability(CORINFO_METHOD_INFO* methodInfo)
     return;
 }
 
-bool  ReplayPolicy::s_WroteReplayBanner = false;
-FILE* ReplayPolicy::s_ReplayFile = nullptr;
+// Statics to track emission of the replay banner
+// and provide file access to the inline xml
+
+bool          ReplayPolicy::s_WroteReplayBanner = false;
+FILE*         ReplayPolicy::s_ReplayFile = nullptr;
+CritSecObject ReplayPolicy::s_XmlReaderLock;
 
 //------------------------------------------------------------------------/
 // ReplayPolicy: construct a new ReplayPolicy
 //
 // Arguments:
 //    compiler -- compiler instance doing the inlining (root compiler)
-//    inlineContext -- inline context for the inline
 //    isPrejitRoot -- true if this compiler is prejitting the root method
 
-ReplayPolicy::ReplayPolicy(Compiler* compiler, InlineContext* inlineContext, bool isPrejitRoot)
+ReplayPolicy::ReplayPolicy(Compiler* compiler, bool isPrejitRoot)
     : DiscretionaryPolicy(compiler, isPrejitRoot)
-    , m_InlineContext(inlineContext)
+    , m_InlineContext(nullptr)
 {
     // Is there a log file open already? If so, we can use it.
     if (s_ReplayFile == nullptr)
@@ -2090,9 +2089,16 @@ ReplayPolicy::ReplayPolicy(Compiler* compiler, InlineContext* inlineContext, boo
             // Nope, open it up.
             const wchar_t* replayFileName = JitConfig.JitInlineReplayFile();
             s_ReplayFile = _wfopen(replayFileName, W("r"));
-            fprintf(stderr, "*** %s inlines from %ws\n",
-                    s_ReplayFile == nullptr ? "Unable to replay" : "Replaying",
-                    replayFileName);
+
+            // Display banner to stderr, unless we're dumping inline Xml,
+            // in which case the policy name is captured in the Xml.
+            if (JitConfig.JitInlineDumpXml() == 0)
+            {
+                fprintf(stderr, "*** %s inlines from %ws\n",
+                        s_ReplayFile == nullptr ? "Unable to replay" : "Replaying",
+                        replayFileName);
+            }
+
             s_WroteReplayBanner = true;
         }
     }
@@ -2122,16 +2128,34 @@ void ReplayPolicy::FinalizeXml()
 
 bool ReplayPolicy::FindMethod()
 {
+    if (s_ReplayFile == nullptr)
+    {
+        return false;
+    }
+
+    // See if we've already found this method.
+    InlineStrategy* inlineStrategy = m_RootCompiler->m_inlineStrategy;
+    long filePosition = inlineStrategy->GetMethodXmlFilePosition();
+
+    if (filePosition == -1)
+    {
+        // Past lookup failed
+        return false;
+    }
+    else if (filePosition > 0)
+    {
+        // Past lookup succeeded, jump there
+        fseek(s_ReplayFile, filePosition, SEEK_SET);
+        return true;
+    }
+
+    // Else, scan the file. Might be nice to build an index
+    // or something, someday.
     const mdMethodDef methodToken =
         m_RootCompiler->info.compCompHnd->getMethodDefFromMethod(
             m_RootCompiler->info.compMethodHnd);
     const unsigned methodHash =
         m_RootCompiler->info.compMethodHash();
-
-    if (s_ReplayFile == nullptr)
-    {
-        return false;
-    }
 
     bool foundMethod = false;
     char buffer[256];
@@ -2184,6 +2208,16 @@ bool ReplayPolicy::FindMethod()
         break;
     }
 
+    // Update file position cache for this method
+    long foundPosition = -1;
+
+    if (foundMethod)
+    {
+        foundPosition = ftell(s_ReplayFile);
+    }
+
+    inlineStrategy->SetMethodXmlFilePosition(foundPosition);
+
     return foundMethod;
 }
 
@@ -2227,8 +2261,9 @@ bool ReplayPolicy::FindContext(InlineContext* context)
     unsigned contextHash =
         m_RootCompiler->info.compCompHnd->getMethodHash(
             context->GetCallee());
+    unsigned contextOffset = (unsigned) context->GetOffset();
 
-    return FindInline(contextToken, contextHash);
+    return FindInline(contextToken, contextHash, contextOffset);
 }
 
 //------------------------------------------------------------------------
@@ -2237,6 +2272,7 @@ bool ReplayPolicy::FindContext(InlineContext* context)
 // Arguments:
 //    token -- token describing the inline
 //    hash  -- hash describing the inline
+//    offset -- IL offset of the call site in the parent method
 //
 // ReturnValue:
 //    true if the inline entry was found
@@ -2249,7 +2285,7 @@ bool ReplayPolicy::FindContext(InlineContext* context)
 //    particular inline, if there are multiple calls to the same
 //    method.
 
-bool ReplayPolicy::FindInline(unsigned token, unsigned hash)
+bool ReplayPolicy::FindInline(unsigned token, unsigned hash, unsigned offset)
 {
     char buffer[256];
     bool foundInline = false;
@@ -2322,11 +2358,10 @@ bool ReplayPolicy::FindInline(unsigned token, unsigned hash)
             break;
         }
 
+        // Match token
         unsigned inlineToken = 0;
         int count = sscanf(buffer, " <Token>%u</Token> ", &inlineToken);
 
-        // Need a secondary check here for callsite.
-        // ...offset or similar.
         if ((count != 1) || (inlineToken != token))
         {
             continue;
@@ -2338,15 +2373,31 @@ bool ReplayPolicy::FindInline(unsigned token, unsigned hash)
             break;
         }
 
+        // Match hash
         unsigned inlineHash = 0;
         count = sscanf(buffer, " <Hash>%u</Hash> ", &inlineHash);
 
-        // Need a secondary check here for callsite ID
-        // ... offset or similar.
         if ((count != 1) || (inlineHash != hash))
         {
             continue;
         }
+
+        // Get next line
+        if (fgets(buffer, sizeof(buffer), s_ReplayFile) == nullptr)
+        {
+            break;
+        }
+
+        // Match offset
+        unsigned inlineOffset = 0;
+        count = sscanf(buffer, " <Offset>%u</Offset> ", &inlineOffset);
+        if ((count != 1) || (inlineOffset != offset))
+        {
+            continue;
+        }
+
+        // Token,Hash,Offset may still not be unique enough, but it's
+        // all we have right now.
 
         // We're good!
         foundInline = true;
@@ -2381,7 +2432,17 @@ bool ReplayPolicy::FindInline(CORINFO_METHOD_HANDLE callee)
     unsigned calleeHash =
         m_RootCompiler->info.compCompHnd->getMethodHash(callee);
 
-    bool foundInline = FindInline(calleeToken, calleeHash);
+    // Abstract this or just pass through raw bits
+    // See matching code in xml writer
+    int offset = -1;
+    if (m_Offset != BAD_IL_OFFSET)
+    {
+        offset = (int) jitGetILoffs(m_Offset);
+    }
+    
+    unsigned calleeOffset = (unsigned) offset;
+
+    bool foundInline = FindInline(calleeToken, calleeHash, calleeOffset);
 
     return foundInline;
 }
@@ -2402,30 +2463,45 @@ void ReplayPolicy::DetermineProfitability(CORINFO_METHOD_INFO* methodInfo)
         return DiscretionaryPolicy::DetermineProfitability(methodInfo);
     }
 
-    // Otherwise try and find this candiate in the Xml. If we fail
-    // the don't inline.
+    // If we're also dumping inline data, make additional observations
+    // based on the method info, and estimate code size, so that the
+    // reports have the necessary data.
+    if (JitConfig.JitInlineDumpData() != 0)
+    {
+        MethodInfoObservations(methodInfo);
+        EstimateCodeSize();
+    }
+
+    // Try and find this candiate in the Xml.
+    // If we fail to find it, then don't inline.
     bool accept = false;
 
-    // First, locate the entries for the root method.
-    bool foundMethod = FindMethod();
-
-    if (foundMethod && (m_InlineContext != nullptr))
+    // Grab the reader lock, since we'll be manipulating
+    // the file pointer as we look for the relevant inline xml.
     {
-        // Next, navigate the context tree to find the entries
-        // for the context that contains this candidate.
-        bool foundContext = FindContext(m_InlineContext);
+        CritSecHolder readerLock(s_XmlReaderLock);
 
-        if (foundContext)
+        // First, locate the entries for the root method.
+        bool foundMethod = FindMethod();
+
+        if (foundMethod && (m_InlineContext != nullptr))
         {
-            // Finally, find this candidate within its context
-            CORINFO_METHOD_HANDLE calleeHandle = methodInfo->ftn;
-            accept = FindInline(calleeHandle);
+            // Next, navigate the context tree to find the entries
+            // for the context that contains this candidate.
+            bool foundContext = FindContext(m_InlineContext);
+
+            if (foundContext)
+            {
+                // Finally, find this candidate within its context
+                CORINFO_METHOD_HANDLE calleeHandle = methodInfo->ftn;
+                accept = FindInline(calleeHandle);
+            }
         }
     }
 
     if (accept)
     {
-        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, "Inline accepted via log replay"))
+        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, "Inline accepted via log replay"));
 
         if (m_IsPrejitRoot)
         {
@@ -2438,7 +2514,7 @@ void ReplayPolicy::DetermineProfitability(CORINFO_METHOD_INFO* methodInfo)
     }
     else
     {
-        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, "Inline rejected via log replay"))
+        JITLOG_THIS(m_RootCompiler, (LL_INFO100000, "Inline rejected via log replay"));
 
         if (m_IsPrejitRoot)
         {

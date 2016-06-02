@@ -69,7 +69,6 @@ set __BuildArchArm64=0
 set __BuildTypeDebug=0
 set __BuildTypeChecked=0
 set __BuildTypeRelease=0
-set __GCStressLevel=0
 set __BuildJit32="-DBUILD_JIT32=0"
 
 REM __PassThroughArgs is a set of things that will be passed through to nested calls to build.cmd
@@ -120,7 +119,6 @@ if /i "%1" == "skipbuildpackages"   (set __SkipBuildPackages=1&shift&goto Arg_Lo
 if /i "%1" == "sequential"          (set __BuildSequential=1&shift&goto Arg_Loop)
 if /i "%1" == "disableoss"          (set __SignTypeReal="/p:SignType=real"&shift&goto Arg_Loop)
 if /i "%1" == "priority"            (set __TestPriority=%2&set __PassThroughArgs=%__PassThroughArgs% %2&shift&shift&goto Arg_Loop)
-if /i "%1" == "gcstresslevel"       (set __GCStressLevel=%2&set __PassThroughArgs=%__PassThroughArgs% %2&shift&shift&goto Arg_Loop)
 if /i "%1" == "buildjit32"          (set __BuildJit32="-DBUILD_JIT32=1"&shift&goto Arg_Loop)
 
 @REM For backwards compatibility, continue accepting "skiptestbuild", which was the original name of the option.
@@ -458,7 +456,7 @@ echo %__MsgPrefix%Generating native image of System.Private.CoreLib for %__Build
 set "__CrossGenCoreLibLog=%__LogsDir%\CrossgenCoreLib_%__BuildOS%__%__BuildArch%__%__BuildType%.log"
 set "__CrossgenExe=%__CrossComponentBinDir%\crossgen.exe"
 "%__CrossgenExe%" /Platform_Assemblies_Paths "%__BinDir%" /out "%__BinDir%\System.Private.CoreLib.ni.dll" "%__BinDir%\System.Private.CoreLib.dll" > "%__CrossGenCoreLibLog%" 2>&1
-if NOT errorlevel 0 (
+if %errorlevel% NEQ 0 (
     echo %__MsgPrefix%Error: CrossGen System.Private.CoreLib build failed. Refer to the build log file for details:
     echo     %__CrossGenCoreLibLog%
     exit /b 1
@@ -469,7 +467,7 @@ echo %__MsgPrefix%Generating native image of MScorlib facade for %__BuildOS%.%__
 set "__CrossGenCoreLibLog=%__LogsDir%\CrossgenMSCoreLib_%__BuildOS%__%__BuildArch%__%__BuildType%.log"
 set "__CrossgenExe=%__CrossComponentBinDir%\crossgen.exe"
 "%__CrossgenExe%" /Platform_Assemblies_Paths "%__BinDir%" /out "%__BinDir%\mscorlib.ni.dll" "%__BinDir%\mscorlib.dll" > "%__CrossGenCoreLibLog%" 2>&1
-if NOT errorlevel 0 (
+if %errorlevel% NEQ 0 (
     echo %__MsgPrefix%Error: CrossGen mscorlib facade build failed. Refer to the build log file for details:
     echo     %__CrossGenCoreLibLog%
     exit /b 1
@@ -491,29 +489,17 @@ set __msbuildLogArgs=^
 /consoleloggerparameters:Summary ^
 /verbosity:minimal
 
-if not defined __SkipCoreLibBuild (
-	set __msbuildArgs="%__ProjectFilesDir%\src\.nuget\Microsoft.NETCore.Runtime.CoreClr\Microsoft.NETCore.Runtime.CoreCLR.builds" /p:Platform=%__BuildArch%
-	%_msbuildexe% !__msbuildArgs! %__msbuildLogArgs%
-	if errorlevel 1 (
-	    echo %__MsgPrefix%Error: Nuget package generation failed build failed. Refer to the build log files for details:
-	    echo     %__BuildLog%
-	    echo     %__BuildWrn%
-	    echo     %__BuildErr%
-	    exit /b 1
-	)
+REM The conditions as to what to build are captured in the builds file.
+set __msbuildArgs="%__ProjectFilesDir%\src\.nuget\packages.builds" /p:Platform=%__BuildArch%
+%_msbuildexe% !__msbuildArgs! %__msbuildLogArgs%
+if errorlevel 1 (
+    echo %__MsgPrefix%Error: Nuget package generation failed build failed. Refer to the build log files for details:
+    echo     %__BuildLog%
+    echo     %__BuildWrn%
+    echo     %__BuildErr%
+    exit /b 1
 )
 
-if not defined __SkipNativeBuild (
-	set __msbuildArgs="%__ProjectFilesDir%\src\.nuget\Microsoft.NETCore.Jit\Microsoft.NETCore.Jit.builds" /p:Platform=%__BuildArch%
-	%_msbuildexe% !__msbuildArgs! %__msbuildLogArgs%
-	if errorlevel 1 (
-	    echo %__MsgPrefix%Error: Nuget package generation failed build failed. Refer to the build log files for details:
-	    echo     %__BuildLog%
-	    echo     %__BuildWrn%
-	    echo     %__BuildErr%
-	    exit /b 1
-	)
-)
 
 :SkipNuget
 
@@ -547,10 +533,6 @@ if defined __BuildSequential (
 
 if defined __TestPriority (
     set "__BuildtestArgs=%__BuildtestArgs% Priority %__TestPriority%"
-)
-
-if %__GCStressLevel% GTR 0 (
-    set "__BuildtestArgs=%__BuildtestArgs% gcstresslevel %__GCStressLevel%"   
 )
 
 rem arm64 builds currently use private toolset which has not been released yet
@@ -680,7 +662,6 @@ echo     or windowsmscorlib. If one of these is passed, only System.Private.Core
 echo     for the specified platform ^(FreeBSD, Linux, NetBSD, OS X or Windows,
 echo     respectively^).
 echo priority ^<N^> : specify a set of test that will be built and run, with priority N.
-echo gcstresslevel ^<N^> : specify the GCStress level the tests should run under.
 echo sequential: force a non-parallel build ^(default is to build in parallel
 echo     using all processors^).
 echo configureonly: skip all builds; only run CMake ^(default: CMake and builds are run^)

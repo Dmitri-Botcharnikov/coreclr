@@ -99,7 +99,6 @@ const BYTE          opcodeArgKinds[] =
 };
 #endif
 
-#if defined(DEBUG) || defined(FEATURE_JIT_METHOD_PERF)
 /*****************************************************************************/
 
 const   char *      varTypeName(var_types vt)
@@ -116,7 +115,6 @@ const   char *      varTypeName(var_types vt)
 
     return  varTypeNames[vt];
 }
-#endif // DEBUG || FEATURE_JIT_METHOD_PERF
 
 #if defined(DEBUG) || defined(LATE_DISASM)
 /*****************************************************************************
@@ -1702,26 +1700,26 @@ unsigned __int64 FloatingPointUtils::convertDoubleToUInt64(double d) {
 
 // Rounds a double-precision floating-point value to the nearest integer,
 // and rounds midpoint values to the nearest even number.
-// Note this should align with classlib in floatnative.cpp
+// Note this should align with classlib in floatdouble.cpp
 // Specializing for x86 using a x87 instruction is optional since
 // this outcome is identical across targets.
-double FloatingPointUtils::round(double d)
+double FloatingPointUtils::round(double x)
 {
     // If the number has no fractional part do nothing
     // This shortcut is necessary to workaround precision loss in borderline cases on some platforms
-    if (d == (double)(__int64)d)
-        return d;
-
-    double tempVal = (d + 0.5);
-    //We had a number that was equally close to 2 integers.
-    //We need to return the even one.
-    double flrTempVal = floor(tempVal);
-    if (flrTempVal == tempVal) {
-        if (fmod(tempVal, 2.0) != 0) {
-            flrTempVal -= 1.0;
-        }
+    if (x == ((double)((__int64)x))) {
+        return x;
     }
 
-    flrTempVal = _copysign(flrTempVal, d);
-    return flrTempVal;
+    // We had a number that was equally close to 2 integers.
+    // We need to return the even one.
+
+    double tempVal = (x + 0.5);
+    double flrTempVal = floor(tempVal);
+
+    if ((flrTempVal == tempVal) && (fmod(tempVal, 2.0) != 0)) {
+        flrTempVal -= 1.0;
+    }
+
+    return _copysign(flrTempVal, x);
 }

@@ -40,26 +40,32 @@ if /i "%1" == "-h"    goto Usage
 if /i "%1" == "/help" goto Usage
 if /i "%1" == "-help" goto Usage
 
-if /i "%1" == "x64"                 (set __BuildArch=x64&set __MSBuildBuildArch=x64&shift&goto Arg_Loop)
-if /i "%1" == "x86"                 (set __BuildArch=x86&set __MSBuildBuildArch=x86&shift&goto Arg_Loop)
+if /i "%1" == "x64"                   (set __BuildArch=x64&set __MSBuildBuildArch=x64&shift&goto Arg_Loop)
+if /i "%1" == "x86"                   (set __BuildArch=x86&set __MSBuildBuildArch=x86&shift&goto Arg_Loop)
 
-if /i "%1" == "debug"               (set __BuildType=Debug&shift&goto Arg_Loop)
-if /i "%1" == "release"             (set __BuildType=Release&shift&goto Arg_Loop)
-if /i "%1" == "checked"             (set __BuildType=Checked&shift&goto Arg_Loop)
+if /i "%1" == "debug"                 (set __BuildType=Debug&shift&goto Arg_Loop)
+if /i "%1" == "release"               (set __BuildType=Release&shift&goto Arg_Loop)
+if /i "%1" == "checked"               (set __BuildType=Checked&shift&goto Arg_Loop)
 
-if /i "%1" == "vs2013"              (set __VSVersion=%1&shift&goto Arg_Loop)
-if /i "%1" == "vs2015"              (set __VSVersion=%1&shift&goto Arg_Loop)
+if /i "%1" == "vs2013"                (set __VSVersion=%1&shift&goto Arg_Loop)
+if /i "%1" == "vs2015"                (set __VSVersion=%1&shift&goto Arg_Loop)
 
 if /i "%1" == "SkipWrapperGeneration" (set __SkipWrapperGeneration=true&shift&goto Arg_Loop)
-if /i "%1" == "Exclude"             (set __Exclude=%2&shift&shift&goto Arg_Loop)
-if /i "%1" == "Exclude0"            (set __Exclude0=%2&shift&shift&goto Arg_Loop)
-if /i "%1" == "TestEnv"             (set __TestEnv=%2&shift&shift&goto Arg_Loop)
-if /i "%1" == "sequential"          (set __Sequential=1&shift&goto Arg_Loop)
-if /i "%1" == "crossgen"            (set __DoCrossgen=1&shift&goto Arg_Loop)
-if /i "%1" == "longgctests"         (set __LongGCTests=1&shift&goto Arg_Loop)
-if /i "%1" == "GenerateLayoutOnly"  (set __GenerateLayoutOnly=1&set __SkipWrapperGeneration=true&shift&goto Arg_Loop)
-if /i "%1" == "PerfTests"           (set __PerfTests=true&set __SkipWrapperGeneration=true&shift&goto Arg_Loop)
-if /i "%1" == "runcrossgentests"    (set __RunCrossgenTests=1&shift&goto Arg_Loop)
+if /i "%1" == "Exclude"               (set __Exclude=%2&shift&shift&goto Arg_Loop)
+if /i "%1" == "Exclude0"              (set __Exclude0=%2&shift&shift&goto Arg_Loop)
+if /i "%1" == "TestEnv"               (set __TestEnv=%2&shift&shift&goto Arg_Loop)
+if /i "%1" == "sequential"            (set __Sequential=1&shift&goto Arg_Loop)
+if /i "%1" == "crossgen"              (set __DoCrossgen=1&shift&goto Arg_Loop)
+if /i "%1" == "longgctests"           (set __LongGCTests=1&shift&goto Arg_Loop)
+if /i "%1" == "jitstress"             (set COMPlus_JitStress=%2&shift&shift&goto Arg_Loop)
+if /i "%1" == "jitstressregs"         (set COMPlus_JitStressRegs=%2&shift&shift&goto Arg_Loop)
+if /i "%1" == "jitminopts"            (set COMPlus_JITMinOpts=1&shift&shift&goto Arg_Loop)
+if /i "%1" == "jitforcerelocs"        (set COMPlus_ForceRelocs=1&shift&shift&goto Arg_Loop)
+if /i "%1" == "GenerateLayoutOnly"    (set __GenerateLayoutOnly=1&set __SkipWrapperGeneration=true&shift&goto Arg_Loop)
+if /i "%1" == "PerfTests"             (set __PerfTests=true&set __SkipWrapperGeneration=true&shift&goto Arg_Loop)
+if /i "%1" == "runcrossgentests"      (set RunCrossGen=true&shift&goto Arg_Loop)
+REM change it to COMPlus_GCStress when we stop using xunit harness
+if /i "%1" == "gcstresslevel"         (set __GCSTRESSLEVEL=%2&shift&shift&goto Arg_Loop) 
 
 if /i not "%1" == "msbuildargs" goto SkipMsbuildArgs
 :: All the rest of the args will be collected and passed directly to msbuild.
@@ -159,8 +165,7 @@ REM These log files are created automatically by the test run process. Q: what d
 set __TestRunHtmlLog=%__LogsDir%\TestRun_%__BuildOS%__%__BuildArch%__%__BuildType%.html
 set __TestRunXmlLog=%__LogsDir%\TestRun_%__BuildOS%__%__BuildArch%__%__BuildType%.xml
 
-REM set ENV variables here:
-if defined __RunCrossgenTests ( set RunCrossGen=true)
+
 if "%__PerfTests%"=="true" goto RunPerfTests
 if "%__SkipWrapperGeneration%"=="true" goto SkipWrapperGeneration
 
@@ -312,10 +317,10 @@ if "%CORE_ROOT%" == "" (
 
 :: Long GC tests take about 10 minutes per test on average, so
 :: they often bump up against the default 10 minute timeout.
-:: 20 minutes is more than enough time for a test to complete successfully.
+:: 30 minutes is more than enough time for a test to complete successfully.
 if defined __LongGCTests (
-    echo Running Long GC tests, extending timeout to 20 minutes
-    set __TestTimeout=1200000
+    echo Running Long GC tests, extending timeout to 30 minutes
+    set __TestTimeout=1800000
 )
 
 set __BuildLogRootName=Tests_GenerateRuntimeLayout
@@ -346,6 +351,14 @@ echo TestEnv- Optional parameter - this will run a custom script to set custom t
 echo VSVersion- Optional parameter - VS2013 or VS2015 ^(default: VS2015^)
 echo GenerateLayoutOnly - If specified will not run the tests and will only create the Runtime Dependency Layout
 echo RunCrossgenTests   - Runs ReadytoRun tests
+echo jitstress n        - Runs the tests with COMPlus_JitStress=n
+echo jitstressregs n    - Runs the tests with COMPlus_JitStressRegs=n
+echo jitminopts         - Runs the tests with COMPlus_JITMinOpts=1
+echo jitforcerelocs     - Runs the tests with COMPlus_ForceRelocs=1
+echo gcstresslevel n    - Runs the tests with COMPlus_GCStress=n
+echo     0: None                                1: GC on all allocs and 'easy' places
+echo     2: GC on transitions to preemptive GC  4: GC on every allowable JITed instr
+echo     8: GC on every allowable NGEN instr   16: GC only on a unique stack trace
 echo CORE_ROOT The path to the runtime  
 exit /b 1
 

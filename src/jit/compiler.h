@@ -279,19 +279,19 @@ public:
     unsigned char       lvOverlappingFields :1;  // True when we have a struct with possibly overlapping fields
     unsigned char       lvContainsHoles     :1;  // True when we have a promoted struct that contains holes
     unsigned char       lvCustomLayout      :1;  // True when this struct has "CustomLayout"
-    unsigned char       lvIsMultiRegArgOrRet:1; // Is this a struct that would be passed or returned in multiple registers?
+    unsigned char       lvIsMultiRegArgOrRet:1;  // Is this a struct that would be passed or returned in multiple registers?
 
-#ifdef _TARGET_ARM_
-    // TODO-Cleanup: Can this be subsumed by the above?
-    unsigned char       lvIsHfaRegArg:1;        // Is this argument variable holding a HFA register argument.
-    unsigned char       lvHfaTypeIsFloat:1;     // Is the HFA type float or double?
-#endif // _TARGET_ARM_
+#ifdef FEATURE_HFA
+    unsigned char       _lvIsHfa            :1;  // Is this a struct variable who's class handle is an HFA type
+    unsigned char       _lvIsHfaRegArg      :1;  // Is this a HFA argument variable?    // TODO-CLEANUP: Remove this and replace with (lvIsRegArg && lvIsHfa())
+    unsigned char       _lvHfaTypeIsFloat   :1;  // Is the HFA type float or double?
+#endif // FEATURE_HFA
 
 #ifdef DEBUG
     // TODO-Cleanup: See the note on lvSize() - this flag is only in use by asserts that are checking for struct
     // types, and is needed because of cases where TYP_STRUCT is bashed to an integral type.
     // Consider cleaning this up so this workaround is not required.
-    unsigned char       lvUnusedStruct   :1; // All references to this promoted struct are through its field locals.
+    unsigned char       lvUnusedStruct   :1;    // All references to this promoted struct are through its field locals.
                                                 // I.e. there is no longer any reference to the struct directly.
                                                 // In this case we can simply remove this struct local.
 #endif
@@ -339,6 +339,75 @@ public:
         unreached();
     }
 #endif // FEATURE_MULTIREG_ARGS
+
+    bool lvIsHfa() const
+    {
+#ifdef FEATURE_HFA
+        return _lvIsHfa;
+#else
+        return false;
+#endif
+    }
+
+    void lvSetIsHfa()
+    {
+#ifdef FEATURE_HFA
+        _lvIsHfa = true;
+#endif
+    }
+
+    bool lvIsHfaRegArg() const
+    {
+#ifdef FEATURE_HFA
+        return _lvIsHfaRegArg;
+#else
+        return false;
+#endif
+    }
+
+    void lvSetIsHfaRegArg()
+    {
+#ifdef FEATURE_HFA
+        _lvIsHfaRegArg = true;
+#endif
+    }
+
+    bool lvHfaTypeIsFloat() const
+    {
+#ifdef FEATURE_HFA
+        return _lvHfaTypeIsFloat;
+#else
+        return false;
+#endif
+    }
+
+    void lvSetHfaTypeIsFloat(bool value)
+    {
+#ifdef FEATURE_HFA
+        _lvHfaTypeIsFloat = value;
+#endif
+    }
+
+    // on Arm64 - Returns 1-4 indicating the number of register slots used by the HFA
+    // on Arm32 - Returns the total number of single FP register slots used by the HFA, max is 8
+    //
+    unsigned lvHfaSlots() const
+    {
+        assert(lvIsHfa());
+        assert(lvType==TYP_STRUCT);
+#ifdef _TARGET_ARM_
+        return lvExactSize / sizeof(float);
+#else //  _TARGET_ARM64_
+        if (lvHfaTypeIsFloat())
+        {
+            return lvExactSize / sizeof(float);
+        }
+        else
+        {
+            return lvExactSize / sizeof(double);
+        }
+#endif //  _TARGET_ARM64_
+    }
 
 private:
 
@@ -598,19 +667,26 @@ public:
         assert(varTypeIsStruct(lvType) ||
                (lvType == TYP_BLK) ||
                (lvPromoted && lvUnusedStruct));
-        return (unsigned)(roundUp(lvExactSize, sizeof(void*)));
+        return (unsigned)(roundUp(lvExactSize, TARGET_POINTER_SIZE));
     }
 
     bool                lvIsMultiregStruct()
     {
 #if FEATURE_MULTIREG_ARGS_OR_RET
-#ifdef _TARGET_ARM64_
-        if ((TypeGet() == TYP_STRUCT) &&
-            (lvSize()  == 2 * TARGET_POINTER_SIZE))
+        if (TypeGet() == TYP_STRUCT)
         {
-            return true;
+            if (lvIsHfa() && (lvHfaSlots() > 1))
+            {
+                return true;
+            }
+#if defined(_TARGET_ARM64_)
+            // lvSize() performs a roundUp operation so it only returns multiples of TARGET_POINTER_SIZE
+            else if (lvSize() == (2 * TARGET_POINTER_SIZE))
+            {
+                return true;
+            }
+#endif // _TARGET_ARM64_
         }
-#endif  // _TARGET_ARM64_
 #endif  // FEATURE_MULTIREG_ARGS_OR_RET
         return false;
     }
@@ -660,24 +736,17 @@ public:
     void                addPrefReg(regMaskTP  regMask, Compiler * pComp);
     bool                IsFloatRegType() const
                         {
-                            return
-#ifdef _TARGET_ARM_
-                                lvIsHfaRegArg ||
-#endif
-                                isFloatRegType(lvType);
+                            return isFloatRegType(lvType) || lvIsHfaRegArg();
                         }
-#ifdef _TARGET_ARM_
     var_types           GetHfaType() const
                         {
-                            assert(lvIsHfaRegArg);
-                            return lvIsHfaRegArg ? (lvHfaTypeIsFloat ? TYP_FLOAT : TYP_DOUBLE) : TYP_UNDEF;
+                            return lvIsHfa() ? (lvHfaTypeIsFloat() ? TYP_FLOAT : TYP_DOUBLE) : TYP_UNDEF;
                         }
     void                SetHfaType(var_types type)
                         {
                             assert(varTypeIsFloating(type));
-                            lvHfaTypeIsFloat = (type == TYP_FLOAT);
+                            lvSetHfaTypeIsFloat(type == TYP_FLOAT);
                         }
-#endif //_TARGET_ARM_
 
 #ifndef LEGACY_BACKEND
     var_types           lvaArgType();
@@ -871,43 +940,6 @@ struct CompTimeInfo
 
     CompTimeInfo(unsigned byteCodeBytes);
 #endif
-};
-
-// TBD: Move this to UtilCode.
-
-// The CLR requires that critical section locks be initialized via its ClrCreateCriticalSection API...but
-// that can't be called until the CLR is initialized. If we have static data that we'd like to protect by a
-// lock, and we have a statically allocated lock to protect that data, there's an issue in how to initialize
-// that lock. We could insert an initialize call in the startup path, but one might prefer to keep the code
-// more local. For such situations, CritSecObject solves the initialization problem, via a level of
-// indirection. A pointer to the lock is initially null, and when we query for the lock pointer via "Val()".
-// If the lock has not yet been allocated, this allocates one (here a leaf lock), and uses a
-// CompareAndExchange-based lazy-initialization to update the field. If this fails, the allocated lock is
-// destroyed. This will work as long as the first locking attempt occurs after enough CLR initialization has
-// happened to make ClrCreateCriticalSection calls legal.
-class CritSecObject
-{
-    // CRITSEC_COOKIE is an opaque pointer type.
-    CRITSEC_COOKIE m_pCs;
-public:
-    CritSecObject()
-    {
-        m_pCs = NULL;
-    }
-    CRITSEC_COOKIE Val()
-    {
-        if (m_pCs == NULL)
-        {
-            // CompareExchange-based lazy init.
-            CRITSEC_COOKIE newCs = ClrCreateCriticalSection(CrstLeafLock, CRST_DEFAULT);
-            CRITSEC_COOKIE observed = InterlockedCompareExchangeT(&m_pCs, newCs, NULL);
-            if (observed != NULL)
-            {
-                ClrDeleteCriticalSection(newCs);
-            }
-        }
-        return m_pCs;
-    }
 };
 
 #ifdef FEATURE_JIT_METHOD_PERF
@@ -1121,6 +1153,9 @@ struct fgArgTabEntry
     {
         return isBackFilled;
     }
+#ifdef DEBUG
+    void Dump();
+#endif
 };
 typedef struct fgArgTabEntry *  fgArgTabEntryPtr;
 
@@ -1209,8 +1244,10 @@ public:
     void            RecordStkLevel     (unsigned        stkLvl);
     unsigned        RetrieveStkLevel   ();
 
-    unsigned            ArgCount ()  { return argCount; }
-    fgArgTabEntryPtr *  ArgTable ()  { return argTable; }
+    unsigned            ArgCount ()      { return argCount; }
+    fgArgTabEntryPtr *  ArgTable ()      { return argTable; }
+    unsigned            GetNextSlotNum() { return nextSlotNum; }
+
 };
 
 
@@ -1367,29 +1404,25 @@ public:
 #endif
 
 #if FEATURE_MULTIREG_RET
-    GenTreePtr               impAssignStructClassToVar(GenTreePtr op, CORINFO_CLASS_HANDLE hClass);
+    GenTreePtr               impAssignMultiRegTypeToVar(GenTreePtr op, CORINFO_CLASS_HANDLE hClass);
 #endif // FEATURE_MULTIREG_RET
-
-#ifdef _TARGET_ARM_
 
     //-------------------------------------------------------------------------
     // Functions to handle homogeneous floating-point aggregates (HFAs) in ARM.
     // HFAs are one to four element structs where each element is the same
     // type, either all float or all double. They are treated specially
     // in the ARM Procedure Call Standard, specifically, they are passed in
-    // floating-point registers.
+    // floating-point registers instead of the general purpose registers.
     //
 
     bool                            IsHfa(CORINFO_CLASS_HANDLE hClass);
     bool                            IsHfa(GenTreePtr tree);
 
     var_types                       GetHfaType(GenTreePtr tree);
-    unsigned                        GetHfaSlots(GenTreePtr tree);
+    unsigned                        GetHfaCount(GenTreePtr tree);
 
     var_types                       GetHfaType(CORINFO_CLASS_HANDLE hClass);
-    unsigned                        GetHfaSlots(CORINFO_CLASS_HANDLE hClass);
-
-#endif // _TARGET_ARM_
+    unsigned                        GetHfaCount(CORINFO_CLASS_HANDLE hClass);
 
     //-------------------------------------------------------------------------
     // The following is used for struct passing on System V system.
@@ -1940,6 +1973,11 @@ public:
 
     unsigned                gtSetEvalOrder  (GenTree *      tree);
 
+#if FEATURE_STACK_FP_X87
+    bool                    gtFPstLvlRedo;
+    void                    gtComputeFPlvls   (GenTreePtr     tree);
+#endif // FEATURE_STACK_FP_X87
+
     void                    gtSetStmtInfo   (GenTree *      stmt);
 
     // Returns "true" iff "node" has any of the side effects in "flags".
@@ -2270,6 +2308,8 @@ public :
     unsigned            lvaCachedGenericContextArgOffset();   // For CORINFO_CALLCONV_PARAMTYPE and if generic context is passed as THIS pointer
     
     unsigned            lvaLocAllocSPvar;               // variable which has the result of the last alloca/localloc
+
+    unsigned            lvaNewObjArrayArgs;             // variable with arguments for new MD array helper
 
     // TODO-Review: Prior to reg predict we reserve 24 bytes for Spill temps.
     //              after the reg predict we will use a computed maxTmpSize 
@@ -2646,6 +2686,8 @@ protected :
 
     void                impImportAndPushBox (CORINFO_RESOLVED_TOKEN * pResolvedToken);
 
+    void                impImportNewObjArray(CORINFO_RESOLVED_TOKEN* pResolvedToken,
+                                             CORINFO_CALL_INFO* pCallInfo);
 
     bool                impCanPInvokeInline(var_types callRetTyp);
     bool                impCanPInvokeInlineCallSite(var_types callRetTyp);
@@ -2674,12 +2716,15 @@ protected :
                                              GenTreePtr     newobjThis,
                                              int            prefixFlags,
                                              CORINFO_CALL_INFO* callInfo,
-                                             IL_OFFSETX     ilOffset = BAD_IL_OFFSET);
+                                             IL_OFFSET      rawILOffset);
 
     bool                impMethodInfo_hasRetBuffArg(CORINFO_METHOD_INFO * methInfo);
 
     GenTreePtr          impFixupCallStructReturn(GenTreePtr           call,
                                                  CORINFO_CLASS_HANDLE retClsHnd);
+
+    GenTreePtr          impFixupCallLongReturn(GenTreePtr           call,
+                                               CORINFO_CLASS_HANDLE retClsHnd);
 
     GenTreePtr          impFixupStructReturnType(GenTreePtr       op,
                                                  CORINFO_CLASS_HANDLE retClsHnd);
@@ -3064,7 +3109,7 @@ private:
     void                impLoadLoc(unsigned ilLclNum, IL_OFFSET offset);
     bool                impReturnInstruction(BasicBlock *block, int prefixFlags, OPCODE &opcode);
 
-#if defined(_TARGET_ARM_)
+#ifdef _TARGET_ARM_
     void                impMarkLclDstNotPromotable(unsigned tmpNum, GenTreePtr op, CORINFO_CLASS_HANDLE hClass);
 #endif
 
@@ -4433,11 +4478,6 @@ private:
     void                fgSetBlockOrder   (BasicBlock *   block);
 
 
-#if FEATURE_STACK_FP_X87
-    bool                fgFPstLvlRedo;
-    void                fgComputeFPlvls   (GenTreePtr     tree);
-#endif // FEATURE_STACK_FP_X87
-
     //------------------------- Morphing --------------------------------------
 
     unsigned            fgPtrArgCntCur;
@@ -4653,11 +4693,11 @@ private:
     void                fgInsertInlineeBlocks (InlineInfo* pInlineInfo);
     GenTreePtr          fgInlinePrependStatements(InlineInfo* inlineInfo);
 
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     GenTreePtr          fgGetStructAsStructPtr(GenTreePtr tree);
     GenTreePtr          fgAssignStructInlineeToVar(GenTreePtr child, CORINFO_CLASS_HANDLE retClsHnd);
     void                fgAttachStructInlineeToAsg(GenTreePtr tree, GenTreePtr child, CORINFO_CLASS_HANDLE retClsHnd);
-#endif // defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     static fgWalkPreFn  fgUpdateInlineReturnExpressionPlaceHolder;
 
 #ifdef DEBUG
@@ -5371,7 +5411,7 @@ protected :
                         }
 
 #ifdef DEBUG
-    bool                optConfigDisableCSE(bool lexicalCSE);
+    bool                optConfigDisableCSE();
     bool                optConfigDisableCSE2();
 #endif
     void                optOptimizeCSEs();
@@ -6362,13 +6402,17 @@ public :
     GenTreePtr                  eeGetPInvokeCookie(CORINFO_SIG_INFO *szMetaSig);
 
     // Returns the page size for the target machine as reported by the EE.
-    inline size_t               eeGetPageSize() const
+    inline size_t               eeGetPageSize()
     {
+#if COR_JIT_EE_VERSION > 460
+        return eeGetEEInfo()->osPageSize;
+#else // COR_JIT_EE_VERSION <= 460
         return CORINFO_PAGE_SIZE;
+#endif // COR_JIT_EE_VERSION > 460
     }
 
     // Returns the frame size at which we will generate a loop to probe the stack.
-    inline size_t               getVeryLargeFrameSize() const
+    inline size_t               getVeryLargeFrameSize()
     {
 #ifdef _TARGET_ARM_
         // The looping probe code is 40 bytes, whereas the straight-line probing for
@@ -6377,6 +6421,15 @@ public :
         return 2 * eeGetPageSize();
 #else
         return 3 * eeGetPageSize();
+#endif
+    }
+
+    inline bool                 generateCFIUnwindCodes()
+    {
+#if COR_JIT_EE_VERSION > 460 && defined(UNIX_AMD64_ABI)
+        return eeGetEEInfo()->targetAbi == CORINFO_CORERT_ABI;
+#else
+        return false;
 #endif
     }
 
@@ -7491,10 +7544,22 @@ public :
 #endif
         }
 
-        // true if we must generate compatible code with Jit64 quirks
+        // true if we must generate code compatible with JIT32 quirks
+        inline bool         IsJit32Compat()
+        {
+#if defined(_TARGET_X86_) && COR_JIT_EE_VERSION > 460
+            return (jitFlags->corJitFlags2 & CORJIT_FLG2_DESKTOP_QUIRKS) != 0;
+#else
+            return false;
+#endif
+        }
+
+        // true if we must generate code compatible with Jit64 quirks
         inline bool         IsJit64Compat()
         {
-#if defined(_TARGET_AMD64_) && !defined(FEATURE_CORECLR)
+#if defined(_TARGET_AMD64_) && COR_JIT_EE_VERSION > 460
+            return (jitFlags->corJitFlags2 & CORJIT_FLG2_DESKTOP_QUIRKS) != 0;
+#elif defined(_TARGET_AMD64_) && !defined(FEATURE_CORECLR)
             return true;
 #else
             return false;
@@ -7878,7 +7943,7 @@ public :
     // Returns true if the method being compiled returns a non-void and non-struct value.
     // Note that lvaInitTypeRef() normalizes compRetNativeType for struct returns in a 
     // single register as per target arch ABI (e.g on Amd64 Windows structs of size 1, 2,
-    // 4 or 8 gets normalized to TYP_BYTE/TYP_SHORT/TYP_INT/TYP_LONG; On Arm Hfa structs).
+    // 4 or 8 gets normalized to TYP_BYTE/TYP_SHORT/TYP_INT/TYP_LONG; On Arm HFA structs).
     // Methods returning such structs are considered to return non-struct return value and
     // this method returns true in that case.
     bool                compMethodReturnsNativeScalarType() 
@@ -7915,14 +7980,14 @@ public :
     // TODO-ARM64: Does this apply for ARM64 too?
     bool                compMethodReturnsMultiRegRetType() 
     {       
-#if FEATURE_MULTIREG_RET
-#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+#if FEATURE_MULTIREG_RET && (defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || defined(_TARGET_ARM_))
         // Methods returning a struct in two registers is considered having a return value of TYP_STRUCT.
         // Such method's compRetNativeType is TYP_STRUCT without a hidden RetBufArg
         return varTypeIsStruct(info.compRetNativeType) && (info.compRetBuffArg == BAD_VAR_NUM);
-#endif 
-#endif
+#else 
         return false;
+#endif // FEATURE_MULTIREG_RET && (defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || defined(_TARGET_ARM_))
+
     }
 
 #if FEATURE_MULTIREG_ARGS
@@ -8277,7 +8342,7 @@ public:
 
 protected:
 
-    unsigned            compMaxUncheckedOffsetForNullObject; 
+    size_t              compMaxUncheckedOffsetForNullObject; 
 
     void                compInitOptions (CORJIT_FLAGS* compileFlags);
 

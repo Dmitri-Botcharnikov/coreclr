@@ -103,18 +103,13 @@ case $OSName in
 esac
 
 if [ "$__BuildOS" == "Linux" ]; then
-        # Detect Distro
-        if [ "$(cat /etc/*-release | grep -cim1 ubuntu)" -eq 1 ]; then
-            export __DistroName=ubuntu
-        elif [ "$(cat /etc/*-release | grep -cim1 centos)" -eq 1 ]; then
-            export __DistroName=rhel
-        elif [ "$(cat /etc/*-release | grep -cim1 rhel)" -eq 1 ]; then
-            export __DistroName=rhel
-        elif [ "$(cat /etc/*-release | grep -cim1 debian)" -eq 1 ]; then
-            export __DistroName=debian
-        else
-            export __DistroName=""
-        fi
+    if [ ! -e /etc/os-release ]; then
+        echo "WARNING: Can not determine runtime id for current distro."
+        export __DistroRid=""
+    else
+        source /etc/os-release
+        export __DistroRid="$ID.$VERSION_ID-$__BuildArch"
+    fi
 fi
 
 __IntermediatesDir="$__ProjectRoot/bin/obj/$__BuildOS.$__BuildArch.$__BuildType"
@@ -136,6 +131,24 @@ fi
 
     # Build the JIT packages
     $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/Microsoft.NETCore.Jit/Microsoft.NETCore.Jit.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$binclashlog" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:BuildNugetPackage=false /p:UseSharedCompilation=false
+
+if [ $? -ne 0 ]; then
+    echo -e "\nAn error occurred. Aborting build-packages.sh ." >> $build_packages_log
+    echo "ERROR: An error occurred while building packages, see $build_packages_log for more details."
+    exit 1
+fi
+
+    # Build the ILAsm package
+    $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/Microsoft.NETCore.ILAsm/Microsoft.NETCore.ILAsm.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$binclashlog" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:BuildNugetPackage=false /p:UseSharedCompilation=false
+
+if [ $? -ne 0 ]; then
+    echo -e "\nAn error occurred. Aborting build-packages.sh ." >> $build_packages_log
+    echo "ERROR: An error occurred while building packages, see $build_packages_log for more details."
+    exit 1
+fi
+
+    # Build the ILDAsm package
+    $__ProjectRoot/Tools/corerun "$__MSBuildPath" /nologo "$__ProjectRoot/src/.nuget/Microsoft.NETCore.ILDAsm/Microsoft.NETCore.ILDAsm.builds" /verbosity:minimal "/fileloggerparameters:Verbosity=normal;LogFile=$binclashlog" /t:Build /p:__BuildOS=$__BuildOS /p:__BuildArch=$__BuildArch /p:__BuildType=$__BuildType /p:__IntermediatesDir=$__IntermediatesDir /p:BuildNugetPackage=false /p:UseSharedCompilation=false
 
 if [ $? -ne 0 ]; then
     echo -e "\nAn error occurred. Aborting build-packages.sh ." >> $build_packages_log

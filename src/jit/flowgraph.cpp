@@ -8774,254 +8774,6 @@ BasicBlock* Compiler::fgSplitEdge(BasicBlock* curr, BasicBlock* succ)
 }
 
 
-#if FEATURE_STACK_FP_X87
-
-/*****************************************************************************/
-/*****************************************************************************/
-
-void                Compiler::fgComputeFPlvls(GenTreePtr tree)
-{
-    genTreeOps      oper;
-    unsigned        kind;
-    bool            isflt;
-    unsigned        savFPstkLevel;
-
-    noway_assert(tree);
-    noway_assert(tree->gtOper != GT_STMT);
-
-    /* Figure out what kind of a node we have */
-
-    oper  = tree->OperGet();
-    kind  = tree->OperKind();
-    isflt = varTypeIsFloating(tree->TypeGet()) ? 1 : 0;
-
-    /* Is this a constant or leaf node? */
-
-    if  (kind & (GTK_CONST|GTK_LEAF))
-    {
-        codeGen->genFPstkLevel += isflt;
-        goto DONE;
-    }
-
-    /* Is it a 'simple' unary/binary operator? */
-
-    if  (kind & GTK_SMPOP)
-    {
-        GenTreePtr      op1 = tree->gtOp.gtOp1;
-        GenTreePtr      op2 = tree->gtGetOp2();
-
-        /* Check for some special cases */
-
-        switch (oper)
-        {
-        case GT_IND:
-
-            fgComputeFPlvls(op1);
-
-            /* Indirect loads of FP values push a new value on the FP stack */
-
-            codeGen->genFPstkLevel += isflt;
-            goto DONE;
-
-        case GT_CAST:
-
-            fgComputeFPlvls(op1);
-
-            /* Casts between non-FP and FP push on / pop from the FP stack */
-
-            if  (varTypeIsFloating(op1->TypeGet()))
-            {
-                if  (isflt == false)
-                    codeGen->genFPstkLevel--;
-            }
-            else
-            {
-                if  (isflt != false)
-                    codeGen->genFPstkLevel++;
-            }
-
-            goto DONE;
-
-        case GT_LIST:   /* GT_LIST presumably part of an argument list */
-        case GT_COMMA:  /* Comma tosses the result of the left operand */
-
-            savFPstkLevel = codeGen->genFPstkLevel;
-            fgComputeFPlvls(op1);
-            codeGen->genFPstkLevel = savFPstkLevel;
-
-            if  (op2)
-                fgComputeFPlvls(op2);
-
-            goto DONE;
-
-        default:
-            break;
-        }
-
-        if  (!op1)
-        {
-            if  (!op2)
-                goto DONE;
-
-            fgComputeFPlvls(op2);
-            goto DONE;
-        }
-
-        if  (!op2)
-        {
-            fgComputeFPlvls(op1);
-            if (oper == GT_ADDR)
-            {
-                /* If the operand was floating point pop the value from the stack */
-                if (varTypeIsFloating(op1->TypeGet()))
-                {
-                    noway_assert(codeGen->genFPstkLevel);
-                    codeGen->genFPstkLevel--;
-                }
-            }
-
-            // This is a special case to handle the following
-            // optimization: conv.i4(round.d(d)) -> round.i(d)
-
-            if (oper== GT_INTRINSIC && tree->gtIntrinsic.gtIntrinsicId == CORINFO_INTRINSIC_Round &&
-                tree->TypeGet()==TYP_INT)
-            {
-                codeGen->genFPstkLevel--;
-            }
-
-            goto DONE;
-        }
-
-        /* FP assignments need a bit special handling */
-
-        if  (isflt && (kind & GTK_ASGOP))
-        {
-            /* The target of the assignment won't get pushed */
-
-            if  (tree->gtFlags & GTF_REVERSE_OPS)
-            {
-                fgComputeFPlvls(op2);
-                fgComputeFPlvls(op1);
-                 op1->gtFPlvl--;
-                codeGen->genFPstkLevel--;
-            }
-            else
-            {
-                fgComputeFPlvls(op1);
-                op1->gtFPlvl--;
-                codeGen->genFPstkLevel--;
-                fgComputeFPlvls(op2);
-            }
-
-            codeGen->genFPstkLevel--;
-            goto DONE;
-        }
-
-        /* Here we have a binary operator; visit operands in proper order */
-
-        if  (tree->gtFlags & GTF_REVERSE_OPS)
-        {
-            fgComputeFPlvls(op2);
-            fgComputeFPlvls(op1);
-        }
-        else
-        {
-            fgComputeFPlvls(op1);
-            fgComputeFPlvls(op2);
-        }
-
-        /*
-            Binary FP operators pop 2 operands and produce 1 result;
-            assignments consume 1 value and don't produce any.
-         */
-
-        if  (isflt)
-            codeGen->genFPstkLevel--;
-
-        /* Float compares remove both operands from the FP stack */
-
-        if  (kind & GTK_RELOP)
-        {
-            if  (varTypeIsFloating(op1->TypeGet()))
-                codeGen->genFPstkLevel -= 2;
-        }
-
-        goto DONE;
-    }
-
-    /* See what kind of a special operator we have here */
-
-    switch  (oper)
-    {
-    case GT_FIELD:
-        fgComputeFPlvls(tree->gtField.gtFldObj);
-        codeGen->genFPstkLevel += isflt;
-        break;
-
-    case GT_CALL:
-
-        if  (tree->gtCall.gtCallObjp)
-            fgComputeFPlvls(tree->gtCall.gtCallObjp);
-
-        if  (tree->gtCall.gtCallArgs)
-        {
-            savFPstkLevel = codeGen->genFPstkLevel;
-            fgComputeFPlvls(tree->gtCall.gtCallArgs);
-            codeGen->genFPstkLevel = savFPstkLevel;
-        }
-
-        if  (tree->gtCall.gtCallLateArgs)
-        {
-            savFPstkLevel = codeGen->genFPstkLevel;
-            fgComputeFPlvls(tree->gtCall.gtCallLateArgs);
-            codeGen->genFPstkLevel = savFPstkLevel;
-        }
-
-        codeGen->genFPstkLevel += isflt;
-        break;
-
-    case GT_ARR_ELEM:
-
-        fgComputeFPlvls(tree->gtArrElem.gtArrObj);
-
-        unsigned dim;
-        for (dim = 0; dim < tree->gtArrElem.gtArrRank; dim++)
-            fgComputeFPlvls(tree->gtArrElem.gtArrInds[dim]);
-
-        /* Loads of FP values push a new value on the FP stack */
-        codeGen->genFPstkLevel += isflt;
-        break;
-
-    case GT_CMPXCHG:
-        //Evaluate the trees left to right
-        fgComputeFPlvls(tree->gtCmpXchg.gtOpLocation);
-        fgComputeFPlvls(tree->gtCmpXchg.gtOpValue);
-        fgComputeFPlvls(tree->gtCmpXchg.gtOpComparand);
-        noway_assert(!isflt);
-        break;
-
-    case GT_ARR_BOUNDS_CHECK:
-        fgComputeFPlvls(tree->gtBoundsChk.gtArrLen);
-        fgComputeFPlvls(tree->gtBoundsChk.gtIndex);
-        noway_assert(!isflt);
-        break;
-
-#ifdef DEBUG
-    default:
-        noway_assert(!"Unhandled special operator in fgComputeFPlvls()");
-        break;
-#endif
-    }
-
-DONE:
-
-    noway_assert((unsigned char)codeGen->genFPstkLevel == codeGen->genFPstkLevel);
-
-    tree->gtFPlvl = (unsigned char)codeGen->genFPstkLevel;
-}
-
-#endif // FEATURE_STACK_FP_X87
-
 /*****************************************************************************/
 /*****************************************************************************/
 
@@ -21481,7 +21233,7 @@ void                Compiler::fgInline()
             if ((expr->gtOper == GT_CALL) && ((expr->gtFlags & GTF_CALL_INLINE_CANDIDATE) != 0))
             {
                 GenTreeCall* call = expr->AsCall();
-                InlineResult inlineResult(this, call, stmt->gtInlineContext, "fgInline");
+                InlineResult inlineResult(this, call, stmt, "fgInline");
 
                 fgMorphStmt = stmt;
 
@@ -21646,7 +21398,7 @@ void Compiler::fgNoteNonInlineCandidate(GenTreePtr   tree,
 
 #endif
 
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
 /*********************************************************************************
  *
@@ -21778,7 +21530,7 @@ void Compiler::fgAttachStructInlineeToAsg(GenTreePtr tree, GenTreePtr child, COR
     tree->CopyFrom(gtNewCpObjNode(dstAddr, srcAddr, retClsHnd, false), this);
 }
 
-#endif // defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
 /*****************************************************************************
  * Callback to replace the inline return expression place holder (GT_RET_EXPR)
@@ -21793,12 +21545,13 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
 
     if (tree->gtOper == GT_RET_EXPR)
     {
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
         // We are going to copy the tree from the inlinee, so save the handle now.
         CORINFO_CLASS_HANDLE retClsHnd = varTypeIsStruct(tree)
                                        ? tree->gtRetExpr.gtRetClsHnd
                                        : NO_CLASS_HANDLE;
-#endif // defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+
 
         do
         {
@@ -21836,12 +21589,14 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
         }
         while (tree->gtOper == GT_RET_EXPR);
 
-#if defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
-#if defined(_TARGET_ARM_)
+#if defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#if defined(FEATURE_HFA)
         if (retClsHnd != NO_CLASS_HANDLE && comp->IsHfa(retClsHnd))
 #elif defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
         if (retClsHnd != NO_CLASS_HANDLE && comp->IsRegisterPassable(retClsHnd))
-#endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#else
+        assert(!"Unhandled target");
+#endif // FEATURE_HFA 
         {
             GenTreePtr parent = data->parent;
             // See assert below, we only look one level above for an asg parent.
@@ -21856,10 +21611,10 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
                 tree->CopyFrom(comp->fgAssignStructInlineeToVar(tree, retClsHnd), comp);
             }
         }
-#endif // defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+#endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     }
 
-#if defined(DEBUG) && (defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING))
+#if defined(DEBUG) && defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     // Make sure we don't have a tree like so: V05 = (, , , retExpr);
     // Since we only look one level above for the parent for '=' and
     // do not check if there is a series of COMMAs. See above.
@@ -21877,7 +21632,7 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
             // empty
         }
 
-#if defined(_TARGET_ARM_)
+#if defined(FEATURE_HFA)
         noway_assert(!varTypeIsStruct(comma) ||
                      comma->gtOper != GT_RET_EXPR ||
                      (!comp->IsHfa(comma->gtRetExpr.gtRetClsHnd)));
@@ -21887,7 +21642,7 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
                      (!comp->IsRegisterPassable(comma->gtRetExpr.gtRetClsHnd)));
 #endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     }
-#endif // defined(DEBUG) && (defined(_TARGET_ARM_) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING))
+#endif // defined(DEBUG) && defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
     return WALK_CONTINUE;
 }
