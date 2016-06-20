@@ -171,6 +171,32 @@ HRESULT ProfilerCallback::CreateObject(
     return hr;
 }
 
+void ProfilerCallback::_SamplingThread()
+{
+    while(TRUE)
+    {
+        Sleep(m_dwDefaultTimeoutMs);
+        {
+            Synchronize guard( m_criticalSection );
+            // Check all threads
+            SList<ThreadInfo *, ThreadID> *m_pThreadTable = g_pCallbackObject->m_pThreadTable;
+            m_pThreadTable->Reset();
+            for (;!m_pThreadTable->AtEnd(); m_pThreadTable->Next())
+            {
+                ThreadInfo *pThreadInfo = m_pThreadTable->Entry();
+                // TEXT_OUTLN("SamplingThreadTicks");
+                pThreadInfo->ticks++;
+            }
+        }
+    }
+}
+
+static void SamplingThread(ProfilerCallback *pProfiler)
+{
+	TEXT_OUTLN("SamplingThread");
+	pProfiler->_SamplingThread();
+}
+
 ProfilerCallback::ProfilerCallback()
     : PrfInfo()
     , m_condemnedGenerationIndex(0)
@@ -195,6 +221,7 @@ ProfilerCallback::ProfilerCallback()
     , m_bTrackingCalls(FALSE)
     , m_bIsTrackingStackTrace(FALSE)
     , m_oldFormat(FALSE)
+    , m_dwDefaultTimeoutMs(0) /* Simple sampling support */
     , m_lastTickCount(0)
     , m_lastClockTick(0)
 {
@@ -322,7 +349,11 @@ __forceinline void ProfilerCallback::Enter(FunctionID functionID)
     ThreadInfo *pThreadInfo = GetThreadInfo();
 
     if (pThreadInfo != NULL)
+    {
+        if ( pThreadInfo->ticks )
+           g_pCallbackObject->_LogCallTrace(functionID); // Do it before push !
         pThreadInfo->m_pThreadCallStack->Push(functionID);
+    }
 
     //
     // log tracing info if requested
@@ -335,14 +366,22 @@ __forceinline void ProfilerCallback::Leave(FunctionID functionID)
 {
     ThreadInfo *pThreadInfo = GetThreadInfo();
     if (pThreadInfo != NULL)
+    {
+        if ( pThreadInfo->ticks )
+            g_pCallbackObject->_LogCallTrace(functionID); // Do it before pop !
         pThreadInfo->m_pThreadCallStack->Pop();
+    }
 }
 
 __forceinline void ProfilerCallback::Tailcall(FunctionID functionID)
 {
     ThreadInfo *pThreadInfo = GetThreadInfo();
     if (pThreadInfo != NULL)
+    {
+        if ( pThreadInfo->ticks )
+            g_pCallbackObject->_LogCallTrace(functionID); // Do it before pop !
         pThreadInfo->m_pThreadCallStack->Pop();
+    }
 }
 
 __forceinline ThreadInfo *ProfilerCallback::GetThreadInfo()
@@ -2095,6 +2134,7 @@ void ProfilerCallback::_GetProfConfigFromEnvironment(ProfConfig * pProfConfig)
     // check to see if there is an inital setting for tracking allocations and calls
     //
     pProfConfig->dwInitialSetting = BASEHELPER::FetchEnvironment( OMV_INITIAL_SETTING );
+    pProfConfig->dwDefaultTimeoutMs = BASEHELPER::FetchEnvironment( OMV_TIMEOUTMS );
 }
 
 void ProfilerCallback::_ProcessProfConfig(ProfConfig * pProfConfig)
@@ -2257,7 +2297,16 @@ void ProfilerCallback::_ProcessProfConfig(ProfConfig * pProfConfig)
         }
     }
 
-//  printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
+    // printf("dwDefaultTimeoutMs %d\n", pProfConfig->dwDefaultTimeoutMs);
+
+    if (m_bTrackingCalls && pProfConfig->dwDefaultTimeoutMs != 0 && pProfConfig->dwDefaultTimeoutMs != 0xFFFFFFFF)
+    {
+        DWORD ourId = 0;
+        m_dwDefaultTimeoutMs = pProfConfig->dwDefaultTimeoutMs;
+        ::CreateThread( NULL, 0, (LPTHREAD_START_ROUTINE)SamplingThread, (void*)this, THREAD_PRIORITY_NORMAL, &ourId);
+    }
+
+    // printf("m_bTrackingObjects = %d  m_bTrackingCalls = %d\n", m_bTrackingObjects, m_bTrackingCalls);
 }
 
 void ProfilerCallback::LogToAny( const char *format, ... )
@@ -2289,7 +2338,18 @@ HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
 #if 1
         char buffer[128];
         char *p = buffer;
-        *p++ = 'c';
+        if (m_dwDefaultTimeoutMs)
+        {
+            DWORD ticks = pThreadInfo->ticks;
+            if (!ticks)
+                return hr;
+            pThreadInfo->ticks = 0;
+            *p++ = 'x';
+            p = putdec(p, GetTickCount() - m_firstTickCount);
+            p = putdec(p, ticks);
+        } else {
+            *p++ = 'c';
+        }
         p = putdec(p, pThreadInfo->m_win32ThreadID);
         p = putdec(p, stackTraceId);
         *p++ = '\n';

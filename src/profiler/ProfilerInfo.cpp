@@ -406,7 +406,8 @@ void BaseInfo::Dump( )
 /* public */
 ThreadInfo::ThreadInfo( ThreadID threadID, SIZE_T internal ) :
     BaseInfo( threadID, internal ),
-    m_win32ThreadID( 0 )
+    m_win32ThreadID( 0 ),
+    ticks( 0 ) // Simple sampling support
 {
     m_pThreadCallStack = new LStack( MAX_LENGTH );
     m_pLatestUnwoundFunction = new LStack( MAX_LENGTH );

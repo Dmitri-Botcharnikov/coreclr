@@ -40,6 +40,7 @@
 #define OMV_FORMAT              "OMV_FORMAT"
 #define	OMV_INITIAL_SETTING     "OMV_INITIAL_SETTING"
 #define OMV_TARGET_CLR_VERSION  "OMV_TargetCLRVersion"
+#define OMV_TIMEOUTMS           "OMV_TIMEOUTMS"
 
 /***************************************************************************************
  ********************                                               ********************
@@ -283,6 +284,7 @@ class ThreadInfo :
         LStack *m_pLatestUnwoundFunction;
 
         StackTraceInfo *m_pLatestStackTraceInfo;
+        DWORD ticks;	/* Simple sampling support */
 
 }; // ThreadInfo
 

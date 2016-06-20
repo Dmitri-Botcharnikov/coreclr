@@ -63,6 +63,8 @@ public:
 
     HRESULT Init(ProfConfig * pProfConfig);
 
+    void _SamplingThread();
+
 public:
     // used by function hooks, they have to be static
     static void  Enter( FunctionID functionID );
@@ -476,6 +478,7 @@ private:
     BOOL m_bIsTrackingStackTrace;
     CRITICAL_SECTION m_criticalSection;
     BOOL m_oldFormat;
+    DWORD m_dwDefaultTimeoutMs; // Simple sampling support
 
     // file stuff
     FILE *m_stream;
