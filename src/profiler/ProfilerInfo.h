@@ -395,7 +395,7 @@ class PrfInfo
         void UpdateCallStack( FunctionID functionID, StackAction action );
         void UpdateOSThreadID( ThreadID managedThreadID, DWORD osThreadID );
         void UpdateUnwindStack( FunctionID *functionID, StackAction action );
-        HRESULT GetNameFromClassID( ClassID classID, __out WCHAR className[] );
+        HRESULT GetNameFromClassID( ClassID classID, __out_nz WCHAR className[] );
 
 
         void Failure( const char *message = NULL );
@@ -429,7 +429,7 @@ class PrfInfo
                                        __out_ecount(functionNameLen) WCHAR *functionName,
                                        size_t functionNameLen );
 
-        HRESULT GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __out WCHAR className[], ClassID *classTypeArgs, ULONG *totalGenericArgCount);
+        HRESULT GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __out_nz WCHAR className[], ClassID *classTypeArgs, ULONG *totalGenericArgCount);
 
         void AppendTypeArgName(ULONG argIndex, ClassID *actualClassTypeArgs, ClassID *actualMethodTypeArgs, BOOL methodFormalArg, __out_ecount(cchBuffer) char *buffer, size_t cchBuffer);
 

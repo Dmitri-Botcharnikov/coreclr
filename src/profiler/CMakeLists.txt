@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.12.2)
 
 project(CoreProfiler)
 
-# add_definitions(-DPAL_STDCPP_COMPAT)
+add_definitions(-DPAL_STDCPP_COMPAT)
 
 include_directories(${ARCH_SOURCES_DIR})
 

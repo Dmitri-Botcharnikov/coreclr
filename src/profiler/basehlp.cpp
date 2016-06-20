@@ -335,7 +335,8 @@ void BASEHELPER::LogToFile( const char *format, ... )
                     // first time create otherwise append
                     //
                     const char *flags = (count == 1) ? "w" : "a+";
-                    if ( fopen_s( &stream, "output.log", flags ) != 0 && stream !=NULL)
+                    stream = fopen("output.log", flags);
+                    if ( stream !=NULL)
                     {
                         vfprintf( stream, format, args );
                         fflush( stream );

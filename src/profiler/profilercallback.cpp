@@ -1,6 +1,6 @@
-#include <corhlpr.h>
-
 #include "basehlp.h"
+
+#include <corhlpr.h>
 
 #include "profilercallback.h"
 #include "log.h"
@@ -1298,7 +1298,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectReferences(
             //
             // remember the stack trace only if you requested the class
             //
-            if ( (m_classToMonitor == NULL) || (wcsstr( pClassInfo->m_className, m_classToMonitor ) != NULL) )
+            if ( (m_classToMonitor == NULL) || (PAL_wcsstr( pClassInfo->m_className, m_classToMonitor ) != NULL) )
             {
                 ULONG size = 0;
 
@@ -2530,7 +2530,7 @@ bool ProfilerCallback::_ClassIsFinalizable(ModuleID moduleID, mdToken classToken
                     }
                     else
                     {
-                        printf("got error trying to resolve %S\n", szName);
+                        PAL_fprintf(PAL_stdout, "got error trying to resolve %S\n", szName);
                         return result;
                     }
                 }

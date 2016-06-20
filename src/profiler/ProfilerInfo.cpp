@@ -1254,7 +1254,7 @@ void PrfInfo::UpdateCallStack( FunctionID functionID, StackAction action )
  *
  ***************************************************************************************/
 /* public */
-HRESULT PrfInfo::GetNameFromClassID( ClassID classID, __out WCHAR className[] )
+HRESULT PrfInfo::GetNameFromClassID( ClassID classID, __out_nz WCHAR className[] )
 {
     HRESULT hr = E_FAIL;
 
@@ -1412,7 +1412,7 @@ void PrfInfo::_GetFunctionSig( FunctionInfo **ppFunctionInfo )
     //
     // update the function name if it is not yet set
     //
-    if ( wcsstr( (*ppFunctionInfo)->m_functionName, W("UNKNOWN") ) != NULL )
+    if ( PAL_wcsstr( (*ppFunctionInfo)->m_functionName, W("UNKNOWN") ) != NULL )
     {
         const size_t nameLen = ARRAY_LEN((*ppFunctionInfo)->m_functionName);
 
@@ -1743,7 +1743,7 @@ PCCOR_SIGNATURE PrfInfo::ParseElementType( IMetaDataImport *pMDImport,
 
 DECLSPEC
 /* static public */
-HRESULT PrfInfo::GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __out WCHAR className[], ClassID *classTypeArgs, ULONG *totalGenericArgCount)
+HRESULT PrfInfo::GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __out_nz WCHAR className[], ClassID *classTypeArgs, ULONG *totalGenericArgCount)
 {
     DWORD dwTypeDefFlags = 0;
     HRESULT hr = S_OK;
@@ -1772,7 +1772,7 @@ HRESULT PrfInfo::GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __
 //      printf("Enclosing class name %S\n", className);
         if (FAILED(hr))
             return hr;
-        size_t length = wcslen(className);
+        size_t length = PAL_wcslen(className);
         if (length + 2 < MAX_LENGTH)
         {
             className[length++] = '.';
@@ -1790,11 +1790,11 @@ HRESULT PrfInfo::GetClassName(IMetaDataImport *pMDImport, mdToken classToken, __
         }
     }
 
-    WCHAR *backTick = wcschr(className, L'`');
+    WCHAR *backTick = PAL_wcschr(className, L'`');
     if (backTick != NULL)
     {
         *backTick = L'\0';
-        ULONG genericArgCount = wcstoul(backTick+1, NULL, 10);
+        ULONG genericArgCount = PAL_wcstoul(backTick+1, NULL, 10);
 
         if (genericArgCount >0)
         {
