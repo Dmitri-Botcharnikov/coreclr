@@ -2437,7 +2437,7 @@ void * MAPMapPEFile(HANDLE hFile)
     InternalEnterCriticalSection(pThread, &mapping_critsec);
 
 #if !defined(_AMD64_)
-    loadedBase = mmap((void*)preferredBase, virtualSize, PROT_NONE, MAP_ANON, -1, 0);
+    loadedBase = mmap((void*)preferredBase, virtualSize, PROT_NONE, MAP_ANON|MAP_PRIVATE, -1, 0);
 #else // defined(_AMD64_)    
     // First try to reserve virtual memory using ExecutableAllcator. This allows all PE images to be
     // near each other and close to the coreclr library which also allows the runtime to generate
