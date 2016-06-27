@@ -63,6 +63,11 @@ set(VM_SOURCES_DAC_AND_WKS_COMMON
     formattype.cpp
     fptrstubs.cpp
     frames.cpp
+    ../gc/gccommon.cpp
+    ../gc/gcscan.cpp
+    ../gc/gcsvr.cpp
+    ../gc/gcwks.cpp
+    gdbjit.cpp
     genericdict.cpp
     generics.cpp
     hash.cpp

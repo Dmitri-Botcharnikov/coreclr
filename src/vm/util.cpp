@@ -3359,6 +3359,8 @@ void InitializeClrNotifications()
 #pragma optimize("", off)
 #endif  // _MSC_VER
 
+#include "gdbjit.h"
+
 // called from the runtime
 void DACNotify::DoJITNotification(MethodDesc *MethodDescPtr)
 {
@@ -3370,7 +3372,9 @@ void DACNotify::DoJITNotification(MethodDesc *MethodDescPtr)
         MODE_PREEMPTIVE;
     }
     CONTRACTL_END;
-
+#if defined(FEATURE_PAL) && !defined(CROSSGEN_COMPILE)
+    NotifyGdb::MethodCompiled(MethodDescPtr);
+#endif    
     TADDR Args[2] = { JIT_NOTIFICATION, (TADDR) MethodDescPtr };
     DACNotifyExceptionHelper(Args, 2);
 }
@@ -3386,6 +3390,9 @@ void DACNotify::DoJITDiscardNotification(MethodDesc *MethodDescPtr)
     }
     CONTRACTL_END;
 
+#if defined(FEATURE_PAL) && !defined(CROSSGEN_COMPILE)
+    NotifyGdb::MethodDropped(MethodDescPtr);
+#endif    
     TADDR Args[2] = { JIT_DISCARD_NOTIFICATION, (TADDR) MethodDescPtr };
     DACNotifyExceptionHelper(Args, 2);
 }    
