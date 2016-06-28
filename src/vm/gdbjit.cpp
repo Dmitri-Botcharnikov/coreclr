@@ -12,8 +12,8 @@
 
 #include <stdio.h>
 #include "common.h"
+#include "../coreclr/hosts/inc/coreclrhost.h"
 #include "gdbjit.h"
-
 // GDB JIT interface
 typedef enum
 {
@@ -226,12 +226,14 @@ char array[2544] =
 
 #define DEBUG_LINE  0x129
 #define JIT_SECTION 0x1c66e0
-
 void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
 {
     printf("NotifyGdb::MethodCompiled %p\n", MethodDescPtr);
     PCODE pCode = MethodDescPtr->GetNativeCode();
-    
+    unsigned long line = 0;
+    wchar_t *source = new wchar_t[1024];
+    getLineByILOffsetDelegate("/home/epavlov/coreclr-demo/runtime/helloworld3.exe", 0, 0, &line, &source);
+
     if (pCode == NULL)
         return;
     printf("Native code start: %p\n", pCode);
@@ -258,6 +260,9 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     __jit_debug_descriptor.first_entry = __jit_debug_descriptor.relevant_entry = jit_symbols;
     __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
     __jit_debug_register_code();
+
+
+
 }
 
 void NotifyGdb::MethodDropped(MethodDesc* MethodDescPtr)
