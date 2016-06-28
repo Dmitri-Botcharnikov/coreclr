@@ -14,6 +14,9 @@
 #include "common.h"
 #include "../coreclr/hosts/inc/coreclrhost.h"
 #include "gdbjit.h"
+#include <elf.h>
+#include <dwarf.h>
+
 // GDB JIT interface
 typedef enum
 {
@@ -225,7 +228,10 @@ char array[2544] =
 
 
 #define DEBUG_LINE  0x129
-#define JIT_SECTION 0x1c66e0
+#define TEXT_SECTION (0x4b0 + 64)
+
+
+
 void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
 {
     printf("NotifyGdb::MethodCompiled %p\n", MethodDescPtr);
@@ -237,21 +243,21 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     if (pCode == NULL)
         return;
     printf("Native code start: %p\n", pCode);
-    printf("SizeOf: %d\n", MethodDescPtr->SizeOf());
-//    printf("Original address: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x2d)));
+    
+    
+    
     *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x2d) = pCode;
-//    printf("Changed address: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x2d)));
     printf("Original address: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x38)));
     *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x38) = pCode + 55;
     printf("Changed address: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x38)));
-    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x45) = pCode + 73;
-    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x51) = pCode + 90;
-    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x5d) = pCode + 130;
+    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x46) = pCode + 73;
+    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x52) = pCode + 90;
+    *reinterpret_cast<unsigned long*>(array + DEBUG_LINE + 0x5e) = pCode + 130;
 
-//    printf("Section load: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + JIT_SECTION)));
-//    *reinterpret_cast<unsigned long*>(array + JIT_SECTION) = pCode;
-//    *reinterpret_cast<unsigned long*>(array + JIT_SECTION + 12) = 4096;
-//    printf("Patched: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + JIT_SECTION)));
+    printf("Section load: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + TEXT_SECTION + 16)));
+   *reinterpret_cast<unsigned long*>(array + TEXT_SECTION + 16) = pCode;
+    *reinterpret_cast<unsigned long*>(array + TEXT_SECTION + 32) = 256;
+    printf("Patched: %p\n", reinterpret_cast<void*>(*reinterpret_cast<unsigned long*>(array + TEXT_SECTION + 16)));
     
     jit_code_entry* jit_symbols = new jit_code_entry;
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;

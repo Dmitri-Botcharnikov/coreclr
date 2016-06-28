@@ -21,6 +21,14 @@ class NotifyGdb
 public:
     static void MethodCompiled(MethodDesc* MethodDescPtr);
     static void MethodDropped(MethodDesc* MethodDescPtr);
+private:
+    struct MemBuf
+    {
+        void* MemPtr;
+        unsigned MemSize;
+    };
+    
+    static bool BuildELFHeader();
 };
 
 #endif // #ifndef __GDBJIT_H__
