@@ -481,7 +481,7 @@ private:
     DWORD m_dwDefaultTimeoutMs; // Simple sampling support
 
     // file stuff
-    FILE *m_stream;
+    PAL_FILE *m_stream;
     DWORD m_firstTickCount;
     DWORD m_lastTickCount;
     DWORD m_lastClockTick;

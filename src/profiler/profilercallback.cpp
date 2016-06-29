@@ -248,7 +248,7 @@ ProfilerCallback::~ProfilerCallback()
 
     if ( m_stream != NULL )
     {
-        fclose( m_stream );
+        PAL_fclose( m_stream );
         m_stream = NULL;
     }
 
@@ -304,11 +304,11 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
         //
         // open the correct file stream fo dump the logging information
         //
-        m_stream = fopen((m_path != NULL) ? m_path : m_logFileName, "w+");
+        m_stream = PAL_fopen((m_path != NULL) ? m_path : m_logFileName, "w+");
         hr = ( m_stream == NULL ) ? E_FAIL : S_OK;
         if ( SUCCEEDED( hr ) )
         {
-            setvbuf(m_stream, NULL, _IOFBF, 32768);
+            PAL_setvbuf(m_stream, NULL, _IOFBF, 32768);
             //
             // add an entry for the stack trace in case of managed to unamanged transitions
             //
@@ -1163,7 +1163,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::RuntimeResumeFinished(void)
         m_bDumpCompleted = FALSE;
 
         // flush the log file so the dump is complete there, too
-        fflush(m_stream);
+        PAL_fflush(m_stream);
     }
 
     return S_OK;
@@ -1211,7 +1211,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::MovedReferences(
         p = puthex(p, newObjectIDRangeStart[i]);
         p = putdec(p, cObjectIDRangeLength[i]);
         *p++ = '\n';
-        fwrite(buffer, p - buffer, 1, m_stream);
+        PAL_fwrite(buffer, p - buffer, 1, m_stream);
 #else
         LogToAny("u 0x%p 0x%p %u\n", oldObjectIDRangeStart[i], newObjectIDRangeStart[i], cObjectIDRangeLength[i]);
 #endif
@@ -1262,7 +1262,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectAllocated(
                 p = puthex(p, objectId);
                 p = putdec(p, stackTraceId);
                 *p++ = '\n';
-                fwrite(buffer, p - buffer, 1, m_stream);
+                PAL_fwrite(buffer, p - buffer, 1, m_stream);
 #else
                 if (m_oldFormat)
                 {
@@ -1357,12 +1357,12 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectReferences(
                         p = puthex(p, objectRefIds[i]);
                         if (p - buffer > ARRAY_LEN(buffer) - 32)
                         {
-                            fwrite(buffer, p - buffer, 1, m_stream);
+                            PAL_fwrite(buffer, p - buffer, 1, m_stream);
                             p = buffer;
                         }
                     }
                     *p++ = '\n';
-                    fwrite(buffer, p - buffer, 1, m_stream);
+                    PAL_fwrite(buffer, p - buffer, 1, m_stream);
 #else
                     char refs[MAX_LENGTH];
 
@@ -1526,7 +1526,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::SurvivingReferences(
         p = puthex(p, objectIDRangeStart[i]);
         p = putdec(p, cObjectIDRangeLength[i]);
         *p++ = '\n';
-        fwrite(buffer, p - buffer, 1, m_stream);
+        PAL_fwrite(buffer, p - buffer, 1, m_stream);
 #else
         LogToAny("v 0x%p %u\n", objectIDRangeStart[i], cObjectIDRangeLength[i]);
 #endif
@@ -2317,7 +2317,8 @@ void ProfilerCallback::LogToAny( const char *format, ... )
 
     va_list args;
     va_start( args, format );
-    vfprintf( m_stream, format, args );
+    PAL_vfprintf( m_stream, format, args );
+    va_end( args );
 }
 
 HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
@@ -2353,7 +2354,7 @@ HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
         p = putdec(p, pThreadInfo->m_win32ThreadID);
         p = putdec(p, stackTraceId);
         *p++ = '\n';
-        fwrite(buffer, p - buffer, 1, m_stream);
+        PAL_fwrite(buffer, p - buffer, 1, m_stream);
 #else
         LogToAny( "c %d %Id\n", pThreadInfo->m_win32ThreadID, stackTraceId );
 #endif
