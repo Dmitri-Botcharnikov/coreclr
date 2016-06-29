@@ -47,7 +47,7 @@ CORECLR_HOSTING_API(coreclr_execute_assembly,
 
 #undef CORECLR_HOSTING_API
 
-typedef  int (*GetLineByILOffsetDelegate)(const char*, unsigned int, unsigned long long, unsigned long *, wchar_t**);
+typedef int (*GetLineByILOffsetDelegate)(const char*, unsigned int, unsigned long long, unsigned long*, char16_t**);
 extern GetLineByILOffsetDelegate getLineByILOffsetDelegate;
 #endif // __CORECLR_HOST_H__
 

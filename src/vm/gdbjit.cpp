@@ -102,6 +102,57 @@ GetMethodNativeMap(MethodDesc* methodDesc,
     *mapAllocated = true;
     return S_OK;
 }
+struct LineInfo
+{
+    int lineNumber, ilOffset, nativeOffset;
+};
+HRESULT
+GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* lineInfoLen, BSTR* fileName)
+{
+    unsigned long line = 0;
+    DebuggerILToNativeMap* map = NULL;
+    bool mapAllocated = false;
+
+    ULONG32 numMap;
+    CLRDATA_ADDRESS codeStart;
+
+    GetMethodNativeMap(MethodDescPtr, 0, &numMap, &map, &mapAllocated, &codeStart, NULL);
+    const Module* mod = MethodDescPtr->GetMethodTable()->GetModule();
+    SString modName = mod->GetFile()->GetPath();
+    StackScratchBuffer scratch;
+    const char* szModName = modName.GetUTF8(scratch);
+    *lines = new (nothrow) LineInfo[numMap];
+    if (*lines == nullptr)
+        return E_FAIL;
+    ULONG ilCount = 0;
+    for (ULONG32 i = 0; i < numMap; i++)
+    {
+        if (map[i].ilOffset != ICorDebugInfo::NO_MAPPING && map[i].ilOffset != ICorDebugInfo::PROLOG &&
+            map[i].ilOffset != ICorDebugInfo::EPILOG && map[i].ilOffset != ICorDebugInfo::MAX_MAPPING_VALUE)
+        {
+            if (ilCount != 0)
+            {
+                BSTR tmp[MAX_PATH_FNAME];
+                getLineByILOffsetDelegate(
+                    szModName, MethodDescPtr->GetMemberDef(), map[i].ilOffset, &line, (BSTR*)&tmp);
+            }
+            else
+            {
+                getLineByILOffsetDelegate(szModName, MethodDescPtr->GetMemberDef(), map[i].ilOffset, &line, fileName);
+            }
+            if (line != 0)
+            {
+                (*lines)[ilCount].nativeOffset = map[i].nativeStartOffset;
+                (*lines)[ilCount].ilOffset = map[i].ilOffset;
+                (*lines)[ilCount].lineNumber = line;
+                ilCount++;
+            }
+        }
+    }
+    *lineInfoLen = ilCount;
+
+    return S_OK;
+}
 
 // GDB JIT interface
 typedef enum
@@ -138,16 +189,13 @@ struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
 
 // END of GDB JIT interface
 
-struct my_line_info {
-    const char* filepath;
-    int line, ilOsset, offset;
-} lines[] = {
-    { "hello3.cs", 8, 0, 55},
-    { "hello3.cs", 9, 1, 56},
-    { "hello3.cs", 10, 7, 73},
-    { "hello3.cs", 11, 13, 90},
-    { "hello3.cs", 12, 31, 130}
-};
+//  lines[] = {
+//     { "hello3.cs", 8, 0, 55},
+//     { "hello3.cs", 9, 1, 56},
+//     { "hello3.cs", 10, 7, 73},
+//     { "hello3.cs", 11, 13, 90},
+//     { "hello3.cs", 12, 31, 130}
+// };
 
 
 #define DEBUG_LINE  0x129
@@ -158,55 +206,34 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
 {
     printf("NotifyGdb::MethodCompiled %p\n", MethodDescPtr);
     PCODE pCode = MethodDescPtr->GetNativeCode();
-    unsigned long line = 0;
-    DebuggerILToNativeMap* map = NULL;
-    bool mapAllocated = false;
-
-    ULONG32 numMap;
-    CLRDATA_ADDRESS codeStart;
-
-    GetMethodNativeMap(MethodDescPtr, 0, &numMap, &map, &mapAllocated,
-                       &codeStart, NULL);
-    const Module *mod = MethodDescPtr->GetMethodTable()->GetModule();
-    SString modName = mod->GetFile()->GetPath();
-    StackScratchBuffer scratch;
-    const char *szModName = modName.GetUTF8(scratch);
-    for (ULONG32 i = 0; i < numMap; i++)
-    {
-        if (map[i].ilOffset != ICorDebugInfo::NO_MAPPING &&
-            map[i].ilOffset != ICorDebugInfo::PROLOG &&
-            map[i].ilOffset != ICorDebugInfo::EPILOG)
-        {
-            BSTR source = SysAllocStringLen(0, 1024);
-
-            getLineByILOffsetDelegate(szModName,
-                                      MethodDescPtr->GetMemberDef(),
-                                      map[i].ilOffset,
-                                      &line,
-                                      &source);
-            if (SysStringLen(source) > 0)
-            {
-                printf("IL offsets: %p\t", map[i].ilOffset);
-                printf("Source: %S @ %d\n", source, line);
-            }
-            SysFreeString(source);
-        }
-    }
 
     if (pCode == NULL)
         return;
     printf("Native code start: %p\n", pCode);
+    unsigned int lineInfoLen = 0;
+    LineInfo* lines = nullptr;
+    BSTR fileName = SysAllocStringLen(0, MAX_PATH_FNAME);
 
+    HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &lines, &lineInfoLen, &fileName);
+    if (lineInfoLen == 0)
+    {
+        printf("Can't get debug info from portable PDB.\n");
+        return;
+    }
+    for (unsigned int i = 0; i < lineInfoLen; i++)
+    {
+        printf("Native offset: %d  Source: %S Line: %d\n", lines[i].nativeOffset, fileName, lines[i].lineNumber);
+    }
+    delete[] lines;
+    SysFreeString(fileName);
 
     jit_code_entry* jit_symbols = new jit_code_entry;
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;
-    //jit_symbols->symfile_addr = array;
+    //jit_symbols->symfilefileNamey;
     //jit_symbols->symfile_size = sizeof(array);
     // __jit_debug_descriptor.first_entry = __jit_debug_descriptor.relevant_entry = jit_symbols;
     // __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
     // __jit_debug_register_code();
-
-
 
 }
 
