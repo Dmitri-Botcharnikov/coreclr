@@ -6368,7 +6368,6 @@ public:
 
     HRESULT LoadSymbolsForModule(TADDR mod, SymbolReader* pSymbolReader)
     {
-#ifndef FEATURE_PAL
         HRESULT Status = S_OK;
         ToRelease<IXCLRDataModule> module;
         IfFailRet(g_sos->GetModule(mod, &module));
@@ -6392,6 +6391,7 @@ public:
             pModuleFilename = pSlash+1;
             pSlash = _wcschr(pModuleFilename, DIRECTORY_SEPARATOR_CHAR_W);
         }
+#ifndef FEATURE_PAL
 
         ImageInfo ii;
         if(FAILED(Status = GetClrModuleImages(module, CLRDATA_MODULE_PE_FILE, &ii)))
@@ -6406,6 +6406,11 @@ public:
             ExtOut("SOS warning: No symbols for module %S, source line breakpoints in this module will not bind hr=0x%x\n", wszNameBuffer, Status);
             return S_FALSE; // not finding symbols is a typical case
         }
+#else
+        if(FAILED(Status = pSymbolReader->LoadSymbols(pMDImport, 0, pModuleFilename, FALSE)))
+        {
+            return S_FALSE;
+        }
 #endif // FEATURE_PAL
         return S_OK;
     }
@@ -6418,7 +6423,7 @@ public:
 
         mdMethodDef methodDef;
         ULONG32 ilOffset;
-        if(FAILED(Status = pSymbolReader->ResolveSequencePoint(pFilename, lineNumber, &methodDef, &ilOffset)))
+        if(FAILED(Status = pSymbolReader->ResolveSequencePoint(pFilename, lineNumber, mod, &methodDef, &ilOffset)))
         {
             return S_FALSE; // not binding in a module is typical
         }
@@ -7033,7 +7038,8 @@ DECLARE_API(bpmd)
         ExtOut("!bpmd is not supported on a dump file.\n");
         return Status;
     }
-    
+
+
     // We keep a list of managed breakpoints the user wants to set, and display pending bps
     // bpmd. If you call bpmd <module name> <method> we will set or update an existing bp.
     // bpmd acts as a feeder of breakpoints to bp when the time is right.
@@ -7110,9 +7116,13 @@ DECLARE_API(bpmd)
         // did we get dll and type name or file:line#? Search for a colon in the first arg
         // to see if it is in fact a file:line#
         CHAR* pColon = strchr(DllName.data, ':');
+        if (FAILED(g_ExtSymbols->GetModuleByModuleName(MAIN_CLR_DLL_NAME_A, 0, NULL, NULL))) {
+            ExtOut("File name:Line number not supported\n");
+           fBadParam = true;
+        }
+
         if(NULL != pColon)
         {
-#ifndef FEATURE_PAL
             fIsFilename = true;
             *pColon = '\0';
             pColon++;
@@ -7127,9 +7137,13 @@ DECLARE_API(bpmd)
                 fBadParam = true;
             }
             if(nArg != 1) fBadParam = 1;
-#else
-        ExtOut("File name:Line number not supported\n");
-        fBadParam = true;
+#ifdef FEATURE_PAL
+            if (!SymbolReader::SymbolReaderDllExists())
+            {
+                ExtOut("Can't find dll for symbol reader.");
+                ExtOut("File name:Line number not supported\n");
+                fBadParam = true;
+            }
 #endif // FEATURE_PAL
         }
     }
@@ -7245,7 +7259,7 @@ DECLARE_API(bpmd)
                     // if we have symbols then get the function name so we can lookup the MethodDescs
                     mdMethodDef methodDefToken;
                     ULONG32 ilOffset;
-                    if(SUCCEEDED(symbolReader.ResolveSequencePoint(Filename, lineNumber, &methodDefToken, &ilOffset)))
+                    if(SUCCEEDED(symbolReader.ResolveSequencePoint(Filename, lineNumber, moduleList[iModule], &methodDefToken, &ilOffset)))
                     {
                         ToRelease<IXCLRDataMethodDefinition> pMethodDef = NULL;
                         if (SUCCEEDED(ModDef->GetMethodDefinitionByToken(methodDefToken, &pMethodDef)))
@@ -9595,8 +9609,6 @@ DECLARE_API(GCRoot)
     return Status;
 }
 
-#ifndef FEATURE_PAL
-
 DECLARE_API(GCWhere)
 {
     INIT_API();
@@ -9715,6 +9727,8 @@ DECLARE_API(GCWhere)
 
     return Status;
 }
+
+#ifndef FEATURE_PAL
 
 DECLARE_API(FindRoots)
 {
@@ -11547,12 +11561,10 @@ private:
         IfFailRet(pLocalsEnum->GetCount(&cLocals));
         if (cLocals > 0 && bLocals)
         {
-#ifndef FEATURE_PAL
             bool symbolsAvailable = false;
             SymbolReader symReader;
             if(SUCCEEDED(symReader.LoadSymbols(pMD, pModule)))
                 symbolsAvailable = true;
-#endif
             ExtOut("\nLOCALS:\n");
             for (ULONG i=0; i < cLocals; i++)
             {
@@ -11560,13 +11572,11 @@ private:
                 WCHAR paramName[mdNameLen] = W("\0");
 
                 ToRelease<ICorDebugValue> pValue;
-#ifndef FEATURE_PAL
                 if(symbolsAvailable)
                 {
                     Status = symReader.GetNamedLocalVariable(pILFrame, i, paramName, mdNameLen, &pValue);
                 }
                 else
-#endif
                 {
                     ULONG cArgsFetched;
                     Status = pLocalsEnum->Next(1, &pValue, &cArgsFetched);

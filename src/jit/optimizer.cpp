@@ -856,27 +856,13 @@ bool Compiler::optCheckIterInLoopTest(unsigned loopInd, GenTreePtr test, BasicBl
 //
 unsigned Compiler::optIsLoopIncrTree(GenTreePtr incr)
 {
-    switch (incr->gtOper)
+    GenTree* incrVal;
+    genTreeOps updateOper;
+    unsigned iterVar = incr->IsLclVarUpdateTree(&incrVal, &updateOper);
+    if (iterVar != BAD_VAR_NUM)
     {
-    case GT_ASG_ADD:
-    case GT_ASG_SUB:
-    case GT_ASG_MUL: 
-    case GT_ASG_RSH:
-    case GT_ASG_LSH:
-    case GT_ASG:
-        break;
-    default:
-        return BAD_VAR_NUM;
-    }
-
-    unsigned iterVar;
-    GenTreePtr incrVal;
-    if (incr->gtOper == GT_ASG)
-    {
-        // We have v = v + 1 type asg node.
-        GenTreePtr lhs = incr->gtOp.gtOp1;
-        GenTreePtr rhs = incr->gtOp.gtOp2;
-        switch (rhs->gtOper)
+        // We have v = v op y type asg node.
+        switch (updateOper)
         {
         case GT_ADD:
         case GT_SUB:
@@ -887,33 +873,13 @@ unsigned Compiler::optIsLoopIncrTree(GenTreePtr incr)
         default:
             return BAD_VAR_NUM;
         }
-        GenTreePtr rhsOp1 = rhs->gtOp.gtOp1;
-        incrVal = rhs->gtOp.gtOp2;
 
-        // Make sure lhs and rhs have the right variable numbers.
-        if (lhs->gtOper != GT_LCL_VAR || rhsOp1->gtOper != GT_LCL_VAR || rhsOp1->gtLclVarCommon.gtLclNum != lhs->gtLclVarCommon.gtLclNum)
+        // Increment should be by a const int.
+        // TODO-CQ: CLONE: allow variable increments.
+        if ((incrVal->gtOper != GT_CNS_INT) || (incrVal->TypeGet() != TYP_INT))
         {
             return BAD_VAR_NUM;
         }
-        iterVar = rhsOp1->gtLclVarCommon.gtLclNum;
-    }
-    else
-    {
-        // We have op=
-        GenTreePtr lhs = incr->gtOp.gtOp1;
-        incrVal = incr->gtOp.gtOp2;
-        if (lhs->gtOper != GT_LCL_VAR)
-        {
-            return BAD_VAR_NUM;
-        }
-        iterVar = lhs->gtLclVarCommon.gtLclNum;
-    }
-
-    // Increment should be by a const int.
-    // TODO-CQ: CLONE: allow variable increments.
-    if (incrVal->gtOper != GT_CNS_INT || incrVal->TypeGet() != TYP_INT)
-    {
-        return BAD_VAR_NUM;
     }
 
     return iterVar;
@@ -994,7 +960,7 @@ bool Compiler::optIsLoopTestEvalIntoTemp(GenTreePtr testStmt, GenTreePtr* newTes
     if ((relop->OperGet() == GT_NE) && 
         (opr1->OperGet() == GT_LCL_VAR) &&
         (opr2->OperGet() == GT_CNS_INT) && 
-        (opr2->gtIntCon.gtIconVal == 0))
+        opr2->IsIntegralConst(0))
     {
         // Get the previous statement to get the def (rhs) of Vtmp to see
         // if the "test" is evaluated into Vtmp.
@@ -4883,7 +4849,7 @@ bool                Compiler::optNarrowTree(GenTreePtr     tree,
                         assert(tree->gtType == TYP_INT);
                         op1 = gtNewCastNode(TYP_INT, op1, TYP_INT);
 #ifdef DEBUG
-                        op1->gtFlags |= GTF_MORPHED;
+                        op1->gtDebugFlags |= GTF_DEBUG_NODE_MORPHED;
 #endif
                         tree->gtOp.gtOp1 = op1;
                     }
@@ -5194,11 +5160,7 @@ int                 Compiler::optIsSetAssgLoop(unsigned            lnum,
         {
             noway_assert(beg);
 
-#if JIT_FEATURE_SSA_SKIP_DEFS
             for (GenTreeStmt* stmt = beg->FirstNonPhiDef(); stmt; stmt = stmt->gtNextStmt)
-#else
-            for (GenTreeStmt* stmt = beg->firstStmt(); stmt; stmt = stmt->gtNextStmt)
-#endif
             {
                 noway_assert(stmt->gtOper == GT_STMT);
                 fgWalkTreePre(&stmt->gtStmtExpr, optIsVarAssgCB, &desc);
@@ -5775,11 +5737,7 @@ void Compiler::optHoistLoopExprsForBlock(BasicBlock* blk,
          return;
      }
 
-#if JIT_FEATURE_SSA_SKIP_DEFS
     for (GenTreeStmt* stmt = blk->FirstNonPhiDef(); stmt; stmt = stmt->gtNextStmt)
-#else
-    for (GenTreeStmt* stmt = blk->firstStmt(); stmt; stmt = stmt->gtNextStmt)
-#endif
     {
         GenTreePtr stmtTree = stmt->gtStmtExpr;
         bool hoistable;
@@ -7817,8 +7775,8 @@ GenTree *           Compiler::optIsBoolCond(GenTree *   condBranch,
 
     /* The condition must be "!= 0" or "== 0" */
 
-    if (cond->gtOper != GT_EQ && cond->gtOper != GT_NE)
-        return NULL;
+    if ((cond->gtOper != GT_EQ) && (cond->gtOper != GT_NE))
+        return nullptr;
 
     /* Return the compare node to the caller */
 
@@ -7830,12 +7788,12 @@ GenTree *           Compiler::optIsBoolCond(GenTree *   condBranch,
     GenTree *   opr2 = cond->gtOp.gtOp2;
 
     if  (opr2->gtOper != GT_CNS_INT)
-        return  NULL;
+        return  nullptr;
+
+    if (!opr2->IsIntegralConst(0) && !opr2->IsIntegralConst(1))
+        return nullptr;
 
     ssize_t ival2 = opr2->gtIntCon.gtIconVal;
-
-    if (ival2 != 0 && ival2 != 1)
-        return NULL;
 
     /* Is the value a boolean?
      * We can either have a boolean expression (marked GTF_BOOLEAN) or
@@ -7845,12 +7803,10 @@ GenTree *           Compiler::optIsBoolCond(GenTree *   condBranch,
     {
         isBool = true;
     }
-    else if (opr1->gtOper == GT_CNS_INT)
+    else if ((opr1->gtOper == GT_CNS_INT) &&
+             (opr1->IsIntegralConst(0) || opr1->IsIntegralConst(1)))
     {
-        ssize_t ival1 = opr1->gtIntCon.gtIconVal;
-
-        if (ival1 == 0 || ival1 == 1)
-            isBool = true;
+        isBool = true;
     }
     else if (opr1->gtOper == GT_LCL_VAR)
     {
@@ -8006,7 +7962,11 @@ void                Compiler::optOptimizeBools()
                 continue;
             if (genTypeSize(t1->TypeGet()) != genTypeSize(t2->TypeGet()))
                 continue;
-
+#ifdef _TARGET_ARMARCH_
+            // Skip the small operand which we cannot encode.
+            if (varTypeIsSmall(c1->TypeGet()))
+                continue;
+#endif
             /* The second condition must not contain side effects */
 
             if  (c2->gtFlags & GTF_GLOB_EFFECT)

@@ -78,8 +78,6 @@ void                Compiler::raInit()
 #endif
     codeGen->intRegState.rsIsFloat   = false;
     codeGen->floatRegState.rsIsFloat = true;
-    codeGen->intRegState.rsMaxRegArgNum   = MAX_REG_ARG;
-    codeGen->floatRegState.rsMaxRegArgNum = MAX_FLOAT_REG_ARG;
 
     rpReverseEBPenreg = false;
     rpAsgVarNum       = -1;
@@ -664,11 +662,31 @@ void                Compiler::raSetupArgMasks(RegState *regState)
 // by linear scan. (It is not shared for System V AMD64 platform.)
 regNumber     Compiler::raUpdateRegStateForArg(RegState *regState, LclVarDsc *argDsc)
 {
-    regNumber inArgReg = argDsc->lvArgReg;
+    regNumber inArgReg  = argDsc->lvArgReg;
+    regMaskTP inArgMask = genRegMask(inArgReg);
 
-    noway_assert(genRegMask(inArgReg) & (regState->rsIsFloat ? RBM_FLTARG_REGS : RBM_ARG_REGS));
+    if (regState->rsIsFloat)
+    {
+        noway_assert(inArgMask & RBM_FLTARG_REGS);
+    }
+    else //  regState is for the integer registers
+    {
+        // This might be the fixed return buffer register argument (on ARM64)
+        // We check and allow inArgReg to be theFixedRetBuffReg
+        if (hasFixedRetBuffReg() && (inArgReg == theFixedRetBuffReg()))
+        {
+            // We should have a TYP_BYREF or TYP_I_IMPL arg and not a TYP_STRUCT arg
+            noway_assert(argDsc->lvType == TYP_BYREF || argDsc->lvType == TYP_I_IMPL);
+            // We should have recorded the variable number for the return buffer arg
+            noway_assert(info.compRetBuffArg != BAD_VAR_NUM); 
+        }
+        else  // we have a regular arg 
+        {
+            noway_assert(inArgMask & RBM_ARG_REGS);
+        }
+    }
 
-    regState->rsCalleeRegArgMaskLiveIn |= genRegMask(inArgReg);
+    regState->rsCalleeRegArgMaskLiveIn |= inArgMask;
 
 #ifdef _TARGET_ARM_
     if (argDsc->lvType == TYP_DOUBLE)
@@ -6503,11 +6521,7 @@ void               Compiler::rpPredictRegUse()
 
             compCurBB = block;
 
-#if JIT_FEATURE_SSA_SKIP_DEFS
             for (stmt =  block->FirstNonPhiDef();
-#else
-            for (stmt =  block->bbTreeList;
-#endif
                  stmt != NULL;
                  stmt =  stmt->gtNext)
             {

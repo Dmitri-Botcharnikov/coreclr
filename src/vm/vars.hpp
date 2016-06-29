@@ -418,8 +418,6 @@ GPTR_DECL(MethodTable,      g_pCriticalFinalizerObjectClass);
 GPTR_DECL(MethodTable,      g_pAsyncFileStream_AsyncResultClass);
 GPTR_DECL(MethodTable,      g_pOverlappedDataClass);
 
-GPTR_DECL(MethodTable,      g_ArgumentHandleMT);
-GPTR_DECL(MethodTable,      g_ArgIteratorMT);
 GPTR_DECL(MethodTable,      g_TypedReferenceMT);
 
 GPTR_DECL(MethodTable,      g_pByteArrayMT);
@@ -604,6 +602,10 @@ EXTERN DWORD g_FinalizerWaiterStatus;
 extern ULONGLONG g_ObjFinalizeStartTime;
 extern Volatile<BOOL> g_FinalizerIsRunning;
 extern Volatile<ULONG> g_FinalizerLoopCount;
+
+#if defined(FEATURE_PAL) && defined(FEATURE_EVENT_TRACE)
+extern Volatile<BOOL> g_TriggerHeapDump;
+#endif // FEATURE_PAL
 
 extern LONG GetProcessedExitProcessEventCount();
 

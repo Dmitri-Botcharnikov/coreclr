@@ -72,6 +72,7 @@ struct  escapeMapping_t;        // defined in flowgraph.cpp
 class   emitter;                // defined in emit.h
 struct  ShadowParamVarInfo;     // defined in GSChecks.cpp
 struct  InitVarDscInfo;         // defined in register_arg_convention.h
+class   FgStack;                // defined in flowgraph.cpp
 #if FEATURE_STACK_FP_X87
 struct  FlatFPStateX87;         // defined in fp.h
 #endif
@@ -1139,6 +1140,7 @@ struct fgArgTabEntry
     SYSTEMV_AMD64_CORINFO_STRUCT_REG_PASSING_DESCRIPTOR structDesc;
 #endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
+#ifdef _TARGET_ARM_
     void SetIsHfaRegArg(bool hfaRegArg)
     {
         isHfaRegArg = hfaRegArg;
@@ -1149,10 +1151,26 @@ struct fgArgTabEntry
         isBackFilled = backFilled;
     }
 
-    bool IsBackFilled()
+    bool IsBackFilled() const
     {
         return isBackFilled;
     }
+#else // !_TARGET_ARM_
+    // To make the callers easier, we allow these calls (and the isHfaRegArg and isBackFilled data members) for all platforms.
+    void SetIsHfaRegArg(bool hfaRegArg)
+    {
+    }
+
+    void SetIsBackFilled(bool backFilled)
+    {
+    }
+
+    bool IsBackFilled() const
+    {
+        return false;
+    }
+#endif // !_TARGET_ARM_
+
 #ifdef DEBUG
     void Dump();
 #endif
@@ -1174,6 +1192,8 @@ class  fgArgInfo
     unsigned              stkLevel;     // Stack depth when we make this call (for x86)
 
     unsigned              argTableSize; // size of argTable array (equal to the argCount when done with fgMorphArgs)
+    bool                  hasRegArgs;   // true if we have one or more register arguments
+    bool                  hasStackArgs; // true if we have one or more stack arguments
     bool                  argsComplete; // marker for state
     bool                  argsSorted;   // marker for state
     fgArgTabEntryPtr *    argTable;     // variable sized array of per argument descrption: (i.e. argTable[argTableSize])
@@ -1247,6 +1267,8 @@ public:
     unsigned            ArgCount ()      { return argCount; }
     fgArgTabEntryPtr *  ArgTable ()      { return argTable; }
     unsigned            GetNextSlotNum() { return nextSlotNum; }
+    bool                HasRegArgs()     { return hasRegArgs; } 
+    bool                HasStackArgs()   { return hasStackArgs; }
 
 };
 
@@ -2723,8 +2745,8 @@ protected :
     GenTreePtr          impFixupCallStructReturn(GenTreePtr           call,
                                                  CORINFO_CLASS_HANDLE retClsHnd);
 
-    GenTreePtr          impFixupCallLongReturn(GenTreePtr           call,
-                                               CORINFO_CLASS_HANDLE retClsHnd);
+    GenTreePtr          impInitCallReturnTypeDesc(GenTreePtr           call,
+                                                  CORINFO_CLASS_HANDLE retClsHnd);
 
     GenTreePtr          impFixupStructReturnType(GenTreePtr       op,
                                                  CORINFO_CLASS_HANDLE retClsHnd);
@@ -4171,14 +4193,8 @@ public:
 
     void                fgFindOperOrder   ();
 
-    void                fgSplitMethodTrees();
-
     // method that returns if you should split here
     typedef bool   (fgSplitPredicate)(GenTree * tree, GenTree *parent, fgWalkData *data);
-
-    void                fgSplitProcessOneTree(GenTree *tree, fgSplitPredicate pred);
-
-    static fgWalkPreFn  fgSplitHelper;
 
     void                fgSetBlockOrder   ();
 
@@ -4366,6 +4382,12 @@ protected :
     bool                fgFlowToFirstBlockOfInnerTry(BasicBlock*  blkSrc,
                                                      BasicBlock*  blkDest,
                                                      bool         sibling);
+
+    void                fgObserveInlineConstants(OPCODE opcode,
+                                                 const FgStack& stack,
+                                                 bool isInlining);
+
+    void                fgAdjustForAddressExposedOrWrittenThis();
 
     bool                        fgProfileData_ILSizeMismatch;
     ICorJitInfo::ProfileBuffer *fgProfileBuffer;
@@ -4698,6 +4720,7 @@ private:
     GenTreePtr          fgAssignStructInlineeToVar(GenTreePtr child, CORINFO_CLASS_HANDLE retClsHnd);
     void                fgAttachStructInlineeToAsg(GenTreePtr tree, GenTreePtr child, CORINFO_CLASS_HANDLE retClsHnd);
 #endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
+
     static fgWalkPreFn  fgUpdateInlineReturnExpressionPlaceHolder;
 
 #ifdef DEBUG
@@ -6397,7 +6420,10 @@ public :
 
     CORINFO_EE_INFO *           eeGetEEInfo();
 
+    // Gets the offset of a SDArray's first element
     unsigned                    eeGetArrayDataOffset(var_types type);
+    // Gets the offset of a MDArray's first element
+    unsigned                    eeGetMDArrayDataOffset(var_types type, unsigned rank);
 
     GenTreePtr                  eeGetPInvokeCookie(CORINFO_SIG_INFO *szMetaSig);
 
@@ -7980,13 +8006,22 @@ public :
     // TODO-ARM64: Does this apply for ARM64 too?
     bool                compMethodReturnsMultiRegRetType() 
     {       
-#if FEATURE_MULTIREG_RET && (defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || defined(_TARGET_ARM_))
+#if FEATURE_MULTIREG_RET 
+
+#if (defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || defined(_TARGET_ARM_))
         // Methods returning a struct in two registers is considered having a return value of TYP_STRUCT.
         // Such method's compRetNativeType is TYP_STRUCT without a hidden RetBufArg
         return varTypeIsStruct(info.compRetNativeType) && (info.compRetBuffArg == BAD_VAR_NUM);
-#else 
+#elif defined(_TARGET_X86_)
+        // Longs are returned in two registers on x86
+        return varTypeIsLong(info.compRetNativeType);
+#else
+        unreached();
+#endif
+
+#else
         return false;
-#endif // FEATURE_MULTIREG_RET && (defined(FEATURE_UNIX_AMD64_STRUCT_PASSING) || defined(_TARGET_ARM_))
+#endif // FEATURE_MULTIREG_RET
 
     }
 

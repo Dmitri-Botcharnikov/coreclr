@@ -169,7 +169,7 @@ namespace System {
         }
 
 
-#if WIN64
+#if BIT64
         private const int charPtrAlignConst = 3;
         private const int alignConst        = 7;
 #else
@@ -358,7 +358,7 @@ namespace System {
                 char* a = ap;
                 char* b = bp;
 
-#if WIN64
+#if BIT64
                 // Single int read aligns pointers for the following long reads
                 // PERF: No length check needed as there is always an int32 worth of string allocated
                 //       This read can also include the null terminator which both strings will have
@@ -420,7 +420,7 @@ namespace System {
                 char* a = ap;
                 char* b = bp;
 
-#if WIN64
+#if BIT64
                 // Single int read aligns pointers for the following long reads
                 // No length check needed as this method is called when length >= 2
                 Contract.Assert(length >= 2);
@@ -770,15 +770,21 @@ namespace System {
         [System.Security.SecuritySafeCritical]  // auto-generated
         unsafe public char[] ToCharArray() {
             int length = Length;
-            char[] chars = new char[length];
             if (length > 0)
             {
-                fixed (char* src = &this.m_firstChar)
-                    fixed (char* dest = chars) {
-                        wstrcpy(dest, src, length);
-                    }
+                char[] chars = new char[length];
+                fixed (char* src = &this.m_firstChar) fixed (char* dest = chars)
+                {
+                    wstrcpy(dest, src, length);
+                }
+                return chars;
             }
-            return chars;
+            
+#if FEATURE_CORECLR
+            return Array.Empty<char>();
+#else
+            return new char[0];
+#endif
         }
     
         // Returns a substring of this string as an array of characters.
@@ -793,15 +799,21 @@ namespace System {
                 throw new ArgumentOutOfRangeException("length", Environment.GetResourceString("ArgumentOutOfRange_Index"));
             Contract.EndContractBlock();
 
-            char[] chars = new char[length];
-            if(length > 0)
+            if (length > 0)
             {
-                fixed (char* src = &this.m_firstChar)
-                    fixed (char* dest = chars) {
-                        wstrcpy(dest, src + startIndex, length);
-                    }
+                char[] chars = new char[length];
+                fixed (char* src = &this.m_firstChar) fixed (char* dest = chars)
+                {
+                    wstrcpy(dest, src + startIndex, length);
+                }
+                return chars;
             }
-            return chars;
+            
+#if FEATURE_CORECLR
+            return Array.Empty<char>();
+#else
+            return new char[0];
+#endif
         }
 
         [Pure]
@@ -856,14 +868,24 @@ namespace System {
                     Contract.Assert(src[this.Length] == '\0', "src[this.Length] == '\\0'");
                     Contract.Assert( ((int)src)%4 == 0, "Managed string should start at 4 bytes boundary");
 
-#if WIN32
-                    int hash1 = (5381<<16) + 5381;
-#else
+#if BIT64
                     int hash1 = 5381;
+#else // !BIT64 (32)
+                    int hash1 = (5381<<16) + 5381;
 #endif
                     int hash2 = hash1;
-
-#if WIN32
+#if BIT64
+                    int     c;
+                    char *s = src;
+                    while ((c = s[0]) != 0) {
+                        hash1 = ((hash1 << 5) + hash1) ^ c;
+                        c = s[1];
+                        if (c == 0)
+                            break;
+                        hash2 = ((hash2 << 5) + hash2) ^ c;
+                        s += 2;
+                    }
+#else // !BIT64 (32)
                     // 32 bit machines.
                     int* pint = (int *)src;
                     int len = this.Length;
@@ -878,17 +900,6 @@ namespace System {
                     if (len > 0)
                     {
                         hash1 = ((hash1 << 5) + hash1 + (hash1 >> 27)) ^ pint[0];
-                    }
-#else
-                    int     c;
-                    char *s = src;
-                    while ((c = s[0]) != 0) {
-                        hash1 = ((hash1 << 5) + hash1) ^ c;
-                        c = s[1];
-                        if (c == 0)
-                            break;
-                        hash2 = ((hash2 << 5) + hash2) ^ c;
-                        s += 2;
                     }
 #endif
 #if DEBUG
@@ -912,15 +923,25 @@ namespace System {
                 fixed (char* src = &m_firstChar) {
                     Contract.Assert(src[this.Length] == '\0', "src[this.Length] == '\\0'");
                     Contract.Assert( ((int)src)%4 == 0, "Managed string should start at 4 bytes boundary");
-
-#if WIN32
-                    int hash1 = (5381<<16) + 5381;
-#else
+#if BIT64
                     int hash1 = 5381;
+#else // !BIT64 (32)
+                    int hash1 = (5381<<16) + 5381;
 #endif
                     int hash2 = hash1;
 
-#if WIN32
+#if BIT64
+                    int     c;
+                    char *s = src;
+                    while ((c = s[0]) != 0) {
+                        hash1 = ((hash1 << 5) + hash1) ^ c;
+                        c = s[1];
+                        if (c == 0)
+                            break;
+                        hash2 = ((hash2 << 5) + hash2) ^ c;
+                        s += 2;
+                    }
+#else // !BIT64 (32)
                     // 32 bit machines.
                     int* pint = (int *)src;
                     int len = this.Length;
@@ -935,17 +956,6 @@ namespace System {
                     if (len > 0)
                     {
                         hash1 = ((hash1 << 5) + hash1 + (hash1 >> 27)) ^ pint[0];
-                    }
-#else
-                    int     c;
-                    char *s = src;
-                    while ((c = s[0]) != 0) {
-                        hash1 = ((hash1 << 5) + hash1) ^ c;
-                        c = s[1];
-                        if (c == 0)
-                            break;
-                        hash2 = ((hash2 << 5) + hash2) ^ c;
-                        s += 2;
                     }
 #endif
 #if DEBUG

@@ -1619,11 +1619,7 @@ void                CodeGen::genCodeForBBlist()
 
         if (handlerGetsXcptnObj(block->bbCatchTyp))
         {
-#if JIT_FEATURE_SSA_SKIP_DEFS
             GenTreePtr firstStmt = block->FirstNonPhiDef();
-#else
-            GenTreePtr firstStmt = block->bbTreeList;
-#endif
             if (firstStmt != NULL)
             {
                 GenTreePtr firstTree = firstStmt->gtStmt.gtStmtExpr;
@@ -2466,7 +2462,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
 
             // TODO-ARM64-CQ: Optimize a divide by power of 2 as we do for AMD64
 
-            if (divisorOp->IsZero())
+            if (divisorOp->IsIntegralConst(0))
             {
                 // We unconditionally throw a divide by zero exception
                 genJumpToThrowHlpBlk(EJ_jmp, SCK_DIV_BY_ZERO);
@@ -2495,7 +2491,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                     {
                         GenTreeIntConCommon* intConstTree = divisorOp->AsIntConCommon();
                         ssize_t intConstValue = intConstTree->IconValue();
-                        assert(intConstValue != 0);      // already checked above by IsZero()
+                        assert(intConstValue != 0);      // already checked above by IsIntegralConst(0))
                         if (intConstValue != -1)
                         {                            
                             checkDividend = false;    // We statically know that the dividend is not -1
@@ -2537,7 +2533,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                     // Only one possible exception
                     //     (AnyVal /  0) => DivideByZeroException
                     //
-                    // Note that division by the constant 0 was already checked for above by the op2->IsZero() check
+                    // Note that division by the constant 0 was already checked for above by the op2->IsIntegralConst(0) check
                     //
                     if (!divisorOp->IsCnsIntOrI())
                     {
@@ -2620,6 +2616,8 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
             {
                 NYI("GT_LCL_FLD with TYP_STRUCT");
             }
+            emitAttr size = emitTypeSize(targetType);
+
             noway_assert(targetType != TYP_STRUCT); 
             noway_assert(targetReg != REG_NA);
 
@@ -2633,12 +2631,13 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                 }
                 else
                 {
-                    emit->emitIns_R_S(ins_Load(targetType), emitTypeSize(targetType), targetReg, varNum, offset);
+                    emit->emitIns_R_S(ins_Load(targetType), size, targetReg, varNum, offset);
                 }
             }
             else
             {
-                emit->emitIns_R_S(ins_Move_Extend(targetType, treeNode->InReg()), EA_8BYTE, targetReg, varNum, offset);
+                size = EA_SET_SIZE(size, EA_8BYTE);
+                emit->emitIns_R_S(ins_Move_Extend(targetType, treeNode->InReg()), size, targetReg, varNum, offset);
             }
             genProduceReg(treeNode);
         }
@@ -2714,7 +2713,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
             regNumber dataReg = REG_NA;
             if (data->isContainedIntOrIImmed())
             {
-                assert(data->IsZero());
+                assert(data->IsIntegralConst(0));
                 dataReg = REG_ZR;
             }
             else
@@ -2909,7 +2908,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                 assert(op1Type == op2Type);
                 cmpSize = EA_ATTR(genTypeSize(op1Type));                
 
-                if (op2->IsZero())
+                if (op2->IsIntegralConst(0))
                 {
                     emit->emitIns_R_F(INS_fcmp, cmpSize, op1->gtRegNum, 0.0);
                 }
@@ -3095,7 +3094,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
                 regNumber  dataReg = REG_NA;
                 if (data->isContainedIntOrIImmed())
                 {
-                    assert(data->IsZero());
+                    assert(data->IsIntegralConst(0));
                     dataReg = REG_ZR;
                 }
                 else // data is not contained, so evaluate it into a register
@@ -3272,7 +3271,7 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         break;
 
     case GT_PINVOKE_PROLOG:
-        noway_assert(((gcInfo.gcRegGCrefSetCur|gcInfo.gcRegByrefSetCur) & ~RBM_ARG_REGS) == 0);
+        noway_assert(((gcInfo.gcRegGCrefSetCur|gcInfo.gcRegByrefSetCur) & ~fullIntArgRegMask()) == 0);
 
         // the runtime side requires the codegen here to be consistent
         emit->emitDisableRandomNops();
@@ -3365,118 +3364,6 @@ CodeGen::genCodeForTreeNode(GenTreePtr treeNode)
         break;
     }
 }
-
-
-// Generate code for division (or mod) by power of two
-// or negative powers of two.  (meaning -1 * a power of two, not 2^(-1))
-// Op2 must be a contained integer constant.
-void
-CodeGen::genCodeForPow2Div(GenTreeOp* tree)
-{
-#if 0
-    GenTree *dividend = tree->gtOp.gtOp1;
-    GenTree *divisor  = tree->gtOp.gtOp2;
-    genTreeOps  oper  = tree->OperGet();
-    emitAttr    size  = emitTypeSize(tree);
-    emitter    *emit  = getEmitter();
-    regNumber targetReg  = tree->gtRegNum;
-    var_types targetType = tree->TypeGet();
-
-    bool isSigned = oper == GT_MOD || oper == GT_DIV;
-
-    // precondition: extended dividend is in RDX:RAX
-    // which means it is either all zeros or all ones
-
-    noway_assert(divisor->isContained());
-    GenTreeIntConCommon* divImm = divisor->AsIntConCommon();
-    int64_t imm = divImm->IconValue();
-    ssize_t abs_imm = abs(imm);
-    noway_assert(isPow2(abs_imm));
-    
-
-    if (isSigned)
-    {
-        if (imm == 1)
-        {
-            if (targetReg != REG_RAX)
-                inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
-
-            return;
-        }
-
-        if (abs_imm == 2)
-        {
-            if (oper == GT_MOD)
-            {
-                emit->emitIns_R_I(INS_and, size, REG_RAX, 1); // result is 0 or 1
-                // xor with rdx will flip all bits if negative
-                emit->emitIns_R_R(INS_xor, size, REG_RAX, REG_RDX); // 111.11110 or 0
-            }
-            else
-            {
-                assert(oper == GT_DIV);
-                // add 1 if it's negative
-                emit->emitIns_R_R(INS_sub, size, REG_RAX, REG_RDX);
-            }
-        }
-        else
-        {
-            // add imm-1 if negative
-            emit->emitIns_R_I(INS_and, size, REG_RDX, abs_imm - 1);
-            emit->emitIns_R_R(INS_add, size, REG_RAX, REG_RDX);
-        }
-
-        if (oper == GT_DIV)
-        {
-            unsigned shiftAmount = genLog2(unsigned(abs_imm));
-            inst_RV_SH(INS_sar, size, REG_RAX, shiftAmount);
-
-            if (imm < 0)
-            {
-                emit->emitIns_R(INS_neg, size, REG_RAX);
-            }
-        }
-        else
-        {
-            assert(oper == GT_MOD);
-            if (abs_imm > 2)
-            {
-                emit->emitIns_R_I(INS_and, size, REG_RAX, abs_imm - 1);
-            }
-            // RDX contains 'imm-1' if negative
-            emit->emitIns_R_R(INS_sub, size, REG_RAX, REG_RDX);
-        }
-
-        if (targetReg != REG_RAX)
-        {
-            inst_RV_RV(INS_mov, targetReg, REG_RAX, targetType);
-        }
-    }
-    else
-    {
-        assert (imm > 0);
-
-        if (targetReg != dividend->gtRegNum)
-        {
-            inst_RV_RV(INS_mov, targetReg, dividend->gtRegNum, targetType);
-        }
-
-        if (oper == GT_UDIV)
-        {
-            inst_RV_SH(INS_shr, size, targetReg, genLog2(unsigned(imm)));
-        }
-        else 
-        {
-            assert(oper == GT_UMOD);
-
-            emit->emitIns_R_I(INS_and, size, targetReg, imm -1);
-        }
-    }
-#else // !0
-    NYI("genCodeForPow2Div");
-#endif // !0
-}
-
 
 /***********************************************************************************************
  *  Generate code for localloc
@@ -4175,7 +4062,7 @@ CodeGen::genTableBasedSwitch(GenTree* treeNode)
     getEmitter()->emitIns_R_L(INS_adr, EA_PTRSIZE, compiler->fgFirstBB, tmpReg);
     getEmitter()->emitIns_R_R_R(INS_add, EA_PTRSIZE, baseReg, baseReg, tmpReg);
 
-    // jmp baseReg
+    // br baseReg
     getEmitter()->emitIns_R(INS_br, emitTypeSize(TYP_I_IMPL), baseReg);
 }
 
@@ -4460,7 +4347,7 @@ CodeGen::genCodeForArrOffset(GenTreeArrOffs* arrOffset)
 
     noway_assert(tgtReg != REG_NA);
 
-    if (!offsetNode->IsZero())
+    if (!offsetNode->IsIntegralConst(0))
     {
         emitter *  emit       = getEmitter();
         GenTreePtr arrObj     = arrOffset->gtArrObj;

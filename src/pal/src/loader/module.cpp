@@ -54,7 +54,7 @@ Abstract:
 #include <sys/types.h>
 #include <sys/mman.h>
 
-#if defined(__linux__)
+#if HAVE_GNU_LIBNAMES_H
 #include <gnu/lib-names.h>
 #endif
 
@@ -1617,11 +1617,11 @@ static HMODULE LOADLoadLibrary(LPCSTR shortAsciiName, BOOL fDynamic)
 #if defined(__APPLE__)
         shortAsciiName = "libc.dylib";
 #elif defined(__FreeBSD__)
-        shortAsciiName = FREEBSD_LIBC;
-#elif defined(__NetBSD__)
-        shortAsciiName = "libc.so";
-#else
+        shortAsciiName = "libc.so.7";
+#elif defined(LIBC_SO)
         shortAsciiName = LIBC_SO;
+#else
+        shortAsciiName = "libc.so";
 #endif
     }
 

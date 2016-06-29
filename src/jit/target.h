@@ -584,11 +584,11 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #define PREDICT_REG_VIRTUAL_STUB_PARAM  PREDICT_REG_EAX
 
   // Registers used by PInvoke frame setup
-  #define REG_PINVOKE_FRAME        REG_EDI
+  #define REG_PINVOKE_FRAME        REG_EDI      // EDI is p/invoke "Frame" pointer argument to CORINFO_HELP_INIT_PINVOKE_FRAME helper
   #define RBM_PINVOKE_FRAME        RBM_EDI
-  #define REG_PINVOKE_TCB          REG_ESI
+  #define REG_PINVOKE_TCB          REG_ESI      // ESI is set to Thread Control Block (TCB) on return from CORINFO_HELP_INIT_PINVOKE_FRAME helper
   #define RBM_PINVOKE_TCB          RBM_ESI
-  #define REG_PINVOKE_SCRATCH      REG_EAX
+  #define REG_PINVOKE_SCRATCH      REG_EAX      // EAX is trashed by CORINFO_HELP_INIT_PINVOKE_FRAME helper
   #define RBM_PINVOKE_SCRATCH      RBM_EAX
 
 #ifdef LEGACY_BACKEND
@@ -623,6 +623,10 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
 
   // The registers trashed by the CORINFO_HELP_STOP_FOR_GC helper
   #define RBM_STOP_FOR_GC_TRASH    RBM_CALLEE_TRASH
+
+  // The registers trashed by the CORINFO_HELP_INIT_PINVOKE_FRAME helper. On x86, this helper has a custom calling
+  // convention that takes EDI as argument (but doesn't trash it), trashes EAX, and returns ESI.
+  #define RBM_INIT_PINVOKE_FRAME_TRASH  (RBM_PINVOKE_SCRATCH | RBM_PINVOKE_TCB)
 
   #define REG_FPBASE               REG_EBP
   #define RBM_FPBASE               RBM_EBP
@@ -1108,6 +1112,9 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #define RBM_STOP_FOR_GC_TRASH     (RBM_CALLEE_TRASH & ~(RBM_FLOATRET | RBM_INTRET))
 #endif
 
+  // The registers trashed by the CORINFO_HELP_INIT_PINVOKE_FRAME helper.
+  #define RBM_INIT_PINVOKE_FRAME_TRASH  RBM_CALLEE_TRASH
+
   // What sort of reloc do we use for [disp32] address mode
   #define IMAGE_REL_BASED_DISP32   IMAGE_REL_BASED_REL32
 
@@ -1389,6 +1396,9 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   // See vm\arm\amshelpers.asm for more details.
   #define RBM_STOP_FOR_GC_TRASH     (RBM_CALLEE_TRASH & ~(RBM_FLOATRET | RBM_INTRET))
 
+  // The registers trashed by the CORINFO_HELP_INIT_PINVOKE_FRAME helper.
+  #define RBM_INIT_PINVOKE_FRAME_TRASH  RBM_CALLEE_TRASH
+
   #define REG_FPBASE               REG_R11
   #define RBM_FPBASE               RBM_R11
   #define STR_FPBASE               "r11"
@@ -1661,6 +1671,9 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   // The registers trashed by the CORINFO_HELP_STOP_FOR_GC helper
   #define RBM_STOP_FOR_GC_TRASH    RBM_CALLEE_TRASH
 
+  // The registers trashed by the CORINFO_HELP_INIT_PINVOKE_FRAME helper.
+  #define RBM_INIT_PINVOKE_FRAME_TRASH  RBM_CALLEE_TRASH
+
   #define REG_FPBASE               REG_FP
   #define RBM_FPBASE               RBM_FP
   #define STR_FPBASE               "fp"
@@ -1669,6 +1682,15 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #define STR_SPBASE               "sp"
 
   #define FIRST_ARG_STACK_OFFS    (2*REGSIZE_BYTES)   // Caller's saved FP and return address
+
+  // On ARM64 the calling convention defines REG_R8 (x8) as an additional argument register
+  // It isn't allocated for the normal user arguments, so it isn't counted by MAX_REG_ARG
+  // whether we use this register to pass the RetBuff is controlled by the function hasFixedRetBuffReg()
+  // it is consider to be the next integer argnum, which is 8 
+  //
+  #define REG_ARG_RET_BUFF         REG_R8
+  #define RBM_ARG_RET_BUFF         RBM_R8
+  #define RET_BUFF_ARGNUM          8
 
   #define MAX_REG_ARG              8
   #define MAX_FLOAT_REG_ARG        8
@@ -1748,7 +1770,6 @@ typedef unsigned short          regPairNoSmall; // arm: need 12 bits
   #error Unsupported or unset target architecture
 #endif
 
-
 #ifdef _TARGET_XARCH_
 
   #define JMP_DIST_SMALL_MAX_NEG  (-128)
@@ -1802,6 +1823,7 @@ class Target
 {
 public:
     static const char *             g_tgtCPUName;
+    static const char *             g_tgtPlatformName;
 
     enum ArgOrder { ARG_ORDER_R2L, ARG_ORDER_L2R };
     static const enum ArgOrder      g_tgtArgOrder;
@@ -1883,39 +1905,111 @@ inline bool         genIsValidDoubleReg(regNumber reg)
 
 #endif // defined(LEGACY_BACKEND) && defined(_TARGET_ARM_)
 
-/*****************************************************************************
- *
- *  Returns true if the register is a valid integer argument register 
- */
-inline bool         isValidIntArgReg(regNumber reg)
+//-------------------------------------------------------------------------------------------
+// hasFixedRetBuffReg: 
+//     Returns true if our target architecture uses a fixed return buffer register
+//
+inline bool         hasFixedRetBuffReg()
 {
-    return (genRegMask(reg) & RBM_ARG_REGS) != 0;
+#ifdef _TARGET_ARM64_
+    return true;
+#else
+    return false;
+#endif
 }
 
-/*****************************************************************************
- *
- *  Given a register that is an integer argument register 
- *   returns the next integer argument register 
- */
-regNumber           genRegArgNext(regNumber argReg);
+//-------------------------------------------------------------------------------------------
+// theFixedRetBuffReg: 
+//     Returns the regNumber to use for the fixed return buffer 
+// 
+inline regNumber    theFixedRetBuffReg()
+{
+    assert(hasFixedRetBuffReg());   // This predicate should be checked before calling this method
+#ifdef _TARGET_ARM64_
+    return REG_ARG_RET_BUFF;
+#else
+    return REG_NA;
+#endif
+}
 
+//-------------------------------------------------------------------------------------------
+// theFixedRetBuffMask: 
+//     Returns the regNumber to use for the fixed return buffer 
+// 
+inline regMaskTP    theFixedRetBuffMask()
+{
+    assert(hasFixedRetBuffReg());   // This predicate should be checked before calling this method
+#ifdef _TARGET_ARM64_
+    return RBM_ARG_RET_BUFF;
+#else
+    return 0;
+#endif
+}
+
+//-------------------------------------------------------------------------------------------
+// theFixedRetBuffArgNum: 
+//     Returns the argNum to use for the fixed return buffer 
+// 
+inline unsigned     theFixedRetBuffArgNum()
+{
+    assert(hasFixedRetBuffReg());   // This predicate should be checked before calling this method
+#ifdef _TARGET_ARM64_
+    return RET_BUFF_ARGNUM;
+#else
+    return BAD_VAR_NUM;
+#endif
+}
+
+//-------------------------------------------------------------------------------------------
+// fullIntArgRegMask: 
+//     Returns the full mask of all possible integer registers
+//     Note this includes the fixed return buffer register on Arm64 
+//
+inline regMaskTP       fullIntArgRegMask()
+{    
+    if (hasFixedRetBuffReg())
+    {
+        return RBM_ARG_REGS | theFixedRetBuffMask();
+    }
+    else
+    {
+        return RBM_ARG_REGS;
+    }    
+}
+
+//-------------------------------------------------------------------------------------------
+// isValidIntArgReg: 
+//     Returns true if the register is a valid integer argument register 
+//     Note this method also returns true on Arm64 when 'reg' is the RetBuff register 
+//
+inline bool         isValidIntArgReg(regNumber reg)
+{
+    return (genRegMask(reg) & fullIntArgRegMask()) != 0;
+}
+
+//-------------------------------------------------------------------------------------------
+// genRegArgNext:
+//     Given a register that is an integer argument register 
+//     returns the next integer argument register 
+//
+regNumber           genRegArgNext(regNumber argReg);
 
 #if !defined(_TARGET_X86_)
 
-/*****************************************************************************
- *
- *  Returns true if the register is a valid floating-point argument register 
- */
+//-------------------------------------------------------------------------------------------
+// isValidFloatArgReg:
+//     Returns true if the register is a valid floating-point argument register 
+//
 inline bool         isValidFloatArgReg(regNumber reg)
 {
-    return reg >= FIRST_FP_ARGREG && reg <= LAST_FP_ARGREG;
+    return (reg >= FIRST_FP_ARGREG) && (reg <= LAST_FP_ARGREG);
 }
 
-/*****************************************************************************
- *
- *  Given a register that is a floating-point argument register 
- *   returns the next floating-point argument register 
- */
+//-------------------------------------------------------------------------------------------
+// genRegArgNextFloat:
+//     Given a register that is a floating-point argument register 
+//     returns the next floating-point argument register 
+//
 regNumber           genRegArgNextFloat(regNumber argReg);
 
 #endif // !defined(_TARGET_X86_)

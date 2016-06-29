@@ -11,9 +11,10 @@ if (CLR_CMAKE_TARGET_ARCH_AMD64)
   add_definitions(-DFEATURE_AVX_SUPPORT) 
 endif ()
 
-if (ARM_SOFTFP)
-  add_definitions(-DARM_SOFTFP)
-endif (ARM_SOFTFP)
+
+if(WIN32)
+  set(JIT_RESOURCES Native.rc)
+endif(WIN32)
 
 set( JIT_SOURCES
   alloc.cpp
@@ -139,6 +140,7 @@ set( SOURCES
   ${JIT_SOURCES}
   ${ARCH_SOURCES}
   ${ARCH_LEGACY_SOURCES}
+  ${JIT_RESOURCES}
 )
 
 convert_to_absolute_path(SOURCES ${SOURCES})
@@ -190,6 +192,10 @@ set(JIT_BASE_NAME clrjit)
 if (CLR_BUILD_JIT32)
   set(JIT_BASE_NAME ryujit)
 endif()
+
+if(WIN32)
+  add_definitions(-DFX_VER_INTERNALNAME_STR=${JIT_BASE_NAME}.dll)
+endif(WIN32)
 
 add_subdirectory(dll)
 add_subdirectory(crossgen)

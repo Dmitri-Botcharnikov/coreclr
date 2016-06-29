@@ -238,6 +238,7 @@ protected:
 
     void ComputeOpcodeBin(OPCODE opcode);
     void EstimateCodeSize();
+    void EstimatePerformanceImpact();
     void MethodInfoObservations(CORINFO_METHOD_INFO* methodInfo);
     enum { MAX_ARGS = 6 };
 
@@ -278,7 +279,9 @@ protected:
     unsigned    m_LoadAddressCount;
     unsigned    m_ThrowCount;
     unsigned    m_CallCount;
+    unsigned    m_CallSiteWeight;
     int         m_ModelCodeSizeEstimate;
+    int         m_PerCallInstructionEstimate;
 };
 
 // ModelPolicy is an experimental policy that uses the results
@@ -348,6 +351,9 @@ public:
     // Construct a ReplayPolicy
     ReplayPolicy(Compiler* compiler, bool isPrejitRoot);
 
+    // Policy observations
+    void NoteBool(InlineObservation obs, bool value) override;
+
     // Optional observations
     void NoteContext(InlineContext* context) override
     {
@@ -379,6 +385,7 @@ private:
     static CritSecObject s_XmlReaderLock;
     InlineContext*       m_InlineContext;
     IL_OFFSETX           m_Offset;
+    bool                 m_WasForceInline;
 };
 
 #endif // defined(DEBUG) || defined(INLINE_DATA)

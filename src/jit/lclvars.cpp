@@ -127,8 +127,8 @@ void                Compiler::lvaInitTypeRef()
     }
 #endif // FEATURE_SIMD
 
-    // Are we returning a struct by value? 
-    
+    // Are we returning a struct using a return buffer argument?
+    //
     const bool hasRetBuffArg = impMethodInfo_hasRetBuffArg(info.compMethodInfo);
 
     // Change the compRetNativeType if we are returning a struct by value in a register
@@ -144,7 +144,7 @@ void                Compiler::lvaInitTypeRef()
         {
 #ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING            
             ReturnTypeDesc retTypeDesc;
-            retTypeDesc.Initialize(this, info.compMethodInfo->args.retTypeClass);
+            retTypeDesc.InitializeReturnType(this, info.compMethodInfo->args.retTypeClass);
 
             if (retTypeDesc.GetReturnRegCount() > 1)
             {
@@ -352,10 +352,9 @@ void                Compiler::lvaInitArgs(InitVarDscInfo *          varDscInfo)
     noway_assert(varDscInfo->varNum == info.compArgsCount);
     assert (varDscInfo->intRegArgNum <= MAX_REG_ARG);
 
-    codeGen->intRegState.rsCalleeRegArgNum = varDscInfo->intRegArgNum;
-
+    codeGen->intRegState.rsCalleeRegArgCount = varDscInfo->intRegArgNum;
 #if !FEATURE_STACK_FP_X87
-    codeGen->floatRegState.rsCalleeRegArgNum = varDscInfo->floatRegArgNum;
+    codeGen->floatRegState.rsCalleeRegArgCount = varDscInfo->floatRegArgNum;
 #endif // FEATURE_STACK_FP_X87
 
     // The total argument size must be aligned.
@@ -453,15 +452,8 @@ void                Compiler::lvaInitRetBuffArg(InitVarDscInfo *    varDscInfo)
     LclVarDsc * varDsc = varDscInfo->varDsc;
     bool hasRetBuffArg = impMethodInfo_hasRetBuffArg(info.compMethodInfo);
 
-#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
-    if (varTypeIsStruct(info.compRetNativeType))
-    {
-        if (IsRegisterPassable(info.compMethodInfo->args.retTypeClass))
-        {
-            hasRetBuffArg = false;
-        }
-    }
-#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
+    // These two should always match
+    noway_assert(hasRetBuffArg == varDscInfo->hasRetBufArg);
 
     if (hasRetBuffArg)
     {
@@ -472,7 +464,16 @@ void                Compiler::lvaInitRetBuffArg(InitVarDscInfo *    varDscInfo)
 #if ASSERTION_PROP
         varDsc->lvSingleDef = 1;
 #endif
-        varDsc->lvArgReg  = genMapRegArgNumToRegNum(varDscInfo->allocRegArg(TYP_INT), varDsc->TypeGet());
+        if (hasFixedRetBuffReg())
+        {
+            varDsc->lvArgReg = theFixedRetBuffReg();
+        }
+        else
+        {
+            unsigned retBuffArgNum = varDscInfo->allocRegArg(TYP_INT);
+            varDsc->lvArgReg = genMapIntRegArgNumToRegNum(retBuffArgNum);
+        }
+
 #if FEATURE_MULTIREG__ARGS
         varDsc->lvOtherArgReg = REG_NA;
 #endif
@@ -494,8 +495,7 @@ void                Compiler::lvaInitRetBuffArg(InitVarDscInfo *    varDscInfo)
                 varDsc->lvType = TYP_I_IMPL;
             }
         }
-
-        assert(genMapIntRegNumToRegArgNum(varDsc->lvArgReg) < MAX_REG_ARG);
+        assert(isValidIntArgReg(varDsc->lvArgReg));
 
 #ifdef  DEBUG
         if  (verbose)
@@ -985,7 +985,7 @@ void                Compiler::lvaInitGenericsCtxt(InitVarDscInfo *  varDscInfo)
 
             varDsc->lvIsRegArg = 1;
             varDsc->lvArgReg   = genMapRegArgNumToRegNum(varDscInfo->regArgNum(TYP_INT), varDsc->TypeGet());
-#if FEATURE_MULTIREG__ARGS
+#if FEATURE_MULTIREG_ARGS
             varDsc->lvOtherArgReg = REG_NA;
 #endif
             varDsc->setPrefReg(varDsc->lvArgReg, this);
@@ -1747,7 +1747,7 @@ void   Compiler::lvaPromoteLongVars()
          lclNum++)
     {
         LclVarDsc *  varDsc = &lvaTable[lclNum];
-        if(!varTypeIsLong(varDsc) || varDsc->lvDoNotEnregister || (varDsc->lvRefCnt == 0))
+        if(!varTypeIsLong(varDsc) || varDsc->lvDoNotEnregister || varDsc->lvIsMultiRegArgOrRet || (varDsc->lvRefCnt == 0))
         {
             continue;
         }
@@ -3185,11 +3185,7 @@ void                Compiler::lvaMarkLocalVars(BasicBlock * block)
                block->bbNum, refCntWtd2str(lvaMarkRefsWeight));
 #endif
 
-#if JIT_FEATURE_SSA_SKIP_DEFS
     for (GenTreePtr tree = block->FirstNonPhiDef(); tree; tree = tree->gtNext)
-#else
-    for (GenTreePtr tree = block->bbTreeList; tree; tree = tree->gtNext)
-#endif
     {
         noway_assert(tree->gtOper == GT_STMT);
         
@@ -4150,11 +4146,11 @@ void Compiler::lvaAssignVirtualFrameOffsetsToArgs()
 
     /* Update the argOffs to reflect arguments that are passed in registers */
 
-    noway_assert(codeGen->intRegState.rsCalleeRegArgNum <= MAX_REG_ARG);
-    noway_assert(compArgSize >= codeGen->intRegState.rsCalleeRegArgNum * sizeof(void *));
+    noway_assert(codeGen->intRegState.rsCalleeRegArgCount <= MAX_REG_ARG); 
+    noway_assert(compArgSize >= codeGen->intRegState.rsCalleeRegArgCount * sizeof(void *));
 
 #ifdef _TARGET_X86_
-    argOffs -= codeGen->intRegState.rsCalleeRegArgNum * sizeof(void *);
+    argOffs -= codeGen->intRegState.rsCalleeRegArgCount * sizeof(void *);
 #endif
 
 #ifndef LEGACY_BACKEND

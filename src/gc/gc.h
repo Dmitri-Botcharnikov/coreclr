@@ -227,7 +227,7 @@ struct ScanContext
 #ifdef GC_PROFILING
         pMD = NULL;
 #endif //GC_PROFILING
-#if defined(GC_PROFILING) || FEATURE_EVENT_TRACE
+#if defined(GC_PROFILING) || defined(FEATURE_EVENT_TRACE)
         dwEtwRootKind = kEtwGCRootKindOther;
 #endif // GC_PROFILING || FEATURE_EVENT_TRACE
     }

@@ -143,20 +143,27 @@ private:
 
     void TreeNodeInfoInit(GenTree* stmt);
     void TreeNodeInfoInit(GenTreePtr* tree, GenTree* parent);
-#ifdef _TARGET_ARM_
-    void TreeNodeInfoInitCall(GenTreePtr tree, TreeNodeInfo &info, int &srcCount, int &dstCount);
-#endif // _TARGET_ARM_
-    void TreeNodeInfoInitStructArg(GenTreePtr structArg);
+#if defined(_TARGET_XARCH_)
+    void TreeNodeInfoInitSimple(GenTree* tree);
+#endif // defined(_TARGET_XARCH_)
+    void TreeNodeInfoInitReturn(GenTree* tree);
+    void TreeNodeInfoInitShiftRotate(GenTree* tree);
+    void TreeNodeInfoInitCall(GenTreeCall* call);
     void TreeNodeInfoInitBlockStore(GenTreeBlkOp* blkNode);
+    void TreeNodeInfoInitLogicalOp(GenTree* tree);
+    void TreeNodeInfoInitModDiv(GenTree* tree);
+    void TreeNodeInfoInitIntrinsic(GenTree* tree);
 #ifdef FEATURE_SIMD
-    void TreeNodeInfoInitSIMD(GenTree* tree, LinearScan* lsra);
+    void TreeNodeInfoInitSIMD(GenTree* tree);
 #endif // FEATURE_SIMD
+    void TreeNodeInfoInitCast(GenTree* tree);
 #ifdef _TARGET_ARM64_
     void TreeNodeInfoInitPutArgStk(GenTree* argNode, fgArgTabEntryPtr info);
 #endif // _TARGET_ARM64_
-#if defined(_TARGET_XARCH_)
-    void TreeNodeInfoInitSimple(GenTree* tree, TreeNodeInfo* info, unsigned kind);
-#endif // defined(_TARGET_XARCH_)
+#ifdef FEATURE_UNIX_AMD64_STRUCT_PASSING
+    void TreeNodeInfoInitPutArgStk(GenTree* tree);
+#endif // FEATURE_UNIX_AMD64_STRUCT_PASSING
+    void TreeNodeInfoInitLclHeap(GenTree* tree);
 
     void SpliceInUnary(GenTreePtr parent, GenTreePtr* ppChild, GenTreePtr newNode);
     void DumpNodeInfoMap();
@@ -165,6 +172,8 @@ private:
     void LowerInd(GenTreePtr* ppTree);
     void LowerAddrMode(GenTreePtr* ppTree, GenTree* before, Compiler::fgWalkData* data, bool isIndir);
     void LowerAdd(GenTreePtr* ppTree, Compiler::fgWalkData* data);
+    void LowerUnsignedDivOrMod(GenTree* tree);
+    void LowerSignedDivOrMod(GenTreePtr* ppTree, Compiler::fgWalkData* data);
 
     // Remove the nodes that are no longer used after an addressing mode is constructed under a GT_IND
     void LowerIndCleanupHelper(GenTreeAddrMode* addrMode, GenTreePtr tree);
@@ -186,6 +195,13 @@ private:
     void LowerArrElem(GenTree **ppTree, Compiler::fgWalkData* data);
     void LowerRotate(GenTree *tree);
 
+    // ------------------------------
+    // Decompose helper functions
+    // ------------------------------
+#if !defined(_TARGET_64BIT_)
+    void DecomposeStoreInd(GenTree* tree);
+#endif //!_TARGET_64BIT_
+
     // Utility functions
     void MorphBlkIntoHelperCall         (GenTreePtr pTree, GenTreePtr treeStmt);
 public:
@@ -194,7 +210,7 @@ private:
     static bool NodesAreEquivalentLeaves       (GenTreePtr candidate, GenTreePtr storeInd);
 
     GenTreePtr  CreateLocalTempAsg      (GenTreePtr rhs, unsigned refCount, GenTreePtr *ppLclVar = nullptr);
-
+    GenTreeStmt* CreateTemporary        (GenTree** ppTree);
     bool AreSourcesPossiblyModified     (GenTree* use, GenTree* src1, GenTree *src2);
     void ReplaceNode                    (GenTree** ppTreeLocation,
                                          GenTree* replacementNode,

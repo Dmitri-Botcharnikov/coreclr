@@ -26,6 +26,9 @@
          though still use the 'x64' output path (see use of BuildArch below) -->
     <Platform Condition=" '$(Platform)' == 'x64' ">amd64</Platform>
     <Platform Condition=" '$(Platform)' == 'arm-softfp' ">arm</Platform>
+
+    <!-- We want to exclude the transitive closure of the packages pulled in via project.json as that introduces ambiguity -->
+    <OmitTransitiveCompileReferences>true</OmitTransitiveCompileReferences>
   </PropertyGroup>
 
   <!-- Default configurations to help VS understand the options -->
@@ -43,6 +46,12 @@
     <DebugSymbols>false</DebugSymbols>
     <DebugType>none</DebugType>
   </PropertyGroup>
+
+  <!-- Some of the type forwards should only be build when targeting Windows. -->
+  <PropertyGroup>
+    <DefineConstants Condition="'$(TargetsWindows)'=='true'">$(DefineConstants);WINDOWS_TYPEFORWARDS</DefineConstants>
+  </PropertyGroup>
+
   <!-- Output paths -->
   <PropertyGroup>
     <BaseIntermediateOutputPath>$(RootBinDir)\obj</BaseIntermediateOutputPath>
@@ -57,6 +66,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\System.Private.CoreLib.csproj" />
+  </ItemGroup>
+  
+  <ItemGroup>
+    <Compile Include="TypeForwards.cs" />
   </ItemGroup>
 
   <ItemGroup>

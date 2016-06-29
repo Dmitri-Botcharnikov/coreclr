@@ -19,6 +19,7 @@
 #include "eedbginterfaceimpl.inl"
 #include "perfcounters.h"
 #include "eventtrace.h"
+#include "virtualcallstub.h"
 
 #ifndef DACCESS_COMPILE
 
@@ -4355,6 +4356,7 @@ static void DoEHLog(
 VOID UnwindManagedExceptionPass2(PAL_SEHException& ex, CONTEXT* unwindStartContext)
 {
     UINT_PTR controlPc;
+    PVOID sp;
     EXCEPTION_DISPOSITION disposition;
     CONTEXT* currentFrameContext;
     CONTEXT* callerFrameContext;
@@ -4443,8 +4445,11 @@ VOID UnwindManagedExceptionPass2(PAL_SEHException& ex, CONTEXT* unwindStartConte
             Thread::VirtualUnwindLeafCallFrame(currentFrameContext);
         }
 
+        controlPc = GetIP(currentFrameContext);
+        sp = (PVOID)GetSP(currentFrameContext);
+
         // Check whether we are crossing managed-to-native boundary
-        if (!ExecutionManager::IsManagedCode(GetIP(currentFrameContext)))
+        if (!ExecutionManager::IsManagedCode(controlPc))
         {
             // Return back to the UnwindManagedExceptionPass1 and let it unwind the native frames
             {
@@ -4453,7 +4458,7 @@ VOID UnwindManagedExceptionPass2(PAL_SEHException& ex, CONTEXT* unwindStartConte
                 // in the unwound part of the stack when UnwindManagedExceptionPass2 is resumed 
                 // at the next managed frame.
 
-                UnwindFrameChain(GetThread(), (VOID*)GetSP(currentFrameContext));
+                UnwindFrameChain(GetThread(), sp);
                 // We are going to reclaim the stack range that was scanned by the exception tracker
                 // until now. We need to reset the explicit frames range so that if GC fires before
                 // we recreate the tracker at the first managed frame after unwinding the native 
@@ -4466,11 +4471,12 @@ VOID UnwindManagedExceptionPass2(PAL_SEHException& ex, CONTEXT* unwindStartConte
 
             // Now we need to unwind the native frames until we reach managed frames again or the exception is
             // handled in the native code.
+            STRESS_LOG2(LF_EH, LL_INFO100, "Unwinding native frames starting at IP = %p, SP = %p \n", controlPc, sp);
             PAL_ThrowExceptionFromContext(currentFrameContext, &ex);
             UNREACHABLE();
         }
 
-    } while (Thread::IsAddressInCurrentStack((void*)GetSP(currentFrameContext)) && (establisherFrame != ex.TargetFrameSp));
+    } while (Thread::IsAddressInCurrentStack(sp) && (establisherFrame != ex.TargetFrameSp));
 
     _ASSERTE(!"UnwindManagedExceptionPass2: Unwinding failed. Reached the end of the stack");
     EEPOLICY_HANDLE_FATAL_ERROR(COR_E_EXECUTIONENGINE);
@@ -4598,6 +4604,8 @@ VOID DECLSPEC_NORETURN UnwindManagedExceptionPass1(PAL_SEHException& ex, CONTEXT
 
             controlPc = GetIP(frameContext);
 
+            STRESS_LOG2(LF_EH, LL_INFO100, "Processing exception at native frame: IP = %p, SP = %p \n", controlPc, sp);
+
             if (controlPc == 0)
             {
                 if (!GetThread()->HasThreadStateNC(Thread::TSNC_ProcessedUnhandledException))
@@ -4619,6 +4627,8 @@ VOID DECLSPEC_NORETURN UnwindManagedExceptionPass1(PAL_SEHException& ex, CONTEXT
                 if (disposition == EXCEPTION_EXECUTE_HANDLER)
                 {
                     // Switch to pass 2
+                    STRESS_LOG1(LF_EH, LL_INFO100, "First pass finished, found native handler, TargetFrameSp = %p\n", sp);
+
                     ex.TargetFrameSp = sp;
                     UnwindManagedExceptionPass2(ex, &unwindStartContext);
                     UNREACHABLE();
@@ -4635,7 +4645,7 @@ VOID DECLSPEC_NORETURN UnwindManagedExceptionPass1(PAL_SEHException& ex, CONTEXT
     EEPOLICY_HANDLE_FATAL_ERROR(COR_E_EXECUTIONENGINE);
 }
 
-VOID DECLSPEC_NORETURN DispatchManagedException(PAL_SEHException& ex)
+VOID DECLSPEC_NORETURN DispatchManagedException(PAL_SEHException& ex, bool isHardwareException)
 {
     do
     {
@@ -4644,16 +4654,10 @@ VOID DECLSPEC_NORETURN DispatchManagedException(PAL_SEHException& ex)
             // Unwind the context to the first managed frame
             CONTEXT frameContext;
 
-            // See if the exception is a hardware one. In such case, we are either in jitted code
-            // or in a marked jit helper.
-            if (ex.ContextRecord.ContextFlags & CONTEXT_EXCEPTION_ACTIVE)
+            // If the exception is hardware exceptions, we use the exception's context record directly
+            if (isHardwareException)
             {
                 frameContext = ex.ContextRecord;
-                if (IsIPInMarkedJitHelper(GetIP(&frameContext)))
-                {
-                    // Unwind to the managed caller of the helper
-                    PAL_VirtualUnwind(&frameContext, NULL);
-                }
             }
             else
             {
@@ -4691,6 +4695,7 @@ VOID DECLSPEC_NORETURN DispatchManagedException(PAL_SEHException& ex)
         }
         catch (PAL_SEHException& ex2)
         {
+            isHardwareException = false;
             ex = ex2;
         }
 
@@ -5071,6 +5076,9 @@ BOOL PALAPI IsSafeToHandleHardwareException(PCONTEXT contextRecord, PEXCEPTION_R
         exceptionRecord->ExceptionCode == STATUS_BREAKPOINT || 
         exceptionRecord->ExceptionCode == STATUS_SINGLE_STEP ||
         (IsSafeToCallExecutionManager() && ExecutionManager::IsManagedCode(controlPc)) ||
+#ifdef _TARGET_ARM_
+        IsIPinVirtualStub(controlPc) ||  // access violation comes from DispatchStub of Interface call
+#endif
         IsIPInMarkedJitHelper(controlPc));
 }
 
@@ -5089,25 +5097,6 @@ VOID PALAPI HandleHardwareException(PAL_SEHException* ex)
             UNREACHABLE();
         }
 
-        // Create frame necessary for the exception handling
-        FrameWithCookie<FaultingExceptionFrame> fef;
-#if defined(WIN64EXCEPTIONS)
-        *((&fef)->GetGSCookiePtr()) = GetProcessGSCookie();
-#endif // WIN64EXCEPTIONS
-        {
-            GCX_COOP();     // Must be cooperative to modify frame chain.
-            CONTEXT context = ex->ContextRecord;
-            if (IsIPInMarkedJitHelper(controlPc))
-            {
-                // For JIT helpers, we need to set the frame to point to the
-                // managed code that called the helper, otherwise the stack
-                // walker would skip all the managed frames upto the next
-                // explicit frame.
-                Thread::VirtualUnwindLeafCallFrame(&context);
-            }
-            fef.InitAndLink(&context);
-        }
-
 #ifdef _AMD64_
         // It is possible that an overflow was mapped to a divide-by-zero exception. 
         // This happens when we try to divide the maximum negative value of a
@@ -5123,7 +5112,32 @@ VOID PALAPI HandleHardwareException(PAL_SEHException* ex)
         }
 #endif //_AMD64_
 
-        DispatchManagedException(*ex);
+        // Create frame necessary for the exception handling
+        FrameWithCookie<FaultingExceptionFrame> fef;
+#if defined(WIN64EXCEPTIONS)
+        *((&fef)->GetGSCookiePtr()) = GetProcessGSCookie();
+#endif // WIN64EXCEPTIONS
+        {
+            GCX_COOP();     // Must be cooperative to modify frame chain.
+            if (IsIPInMarkedJitHelper(controlPc))
+            {
+                // For JIT helpers, we need to set the frame to point to the
+                // managed code that called the helper, otherwise the stack
+                // walker would skip all the managed frames upto the next
+                // explicit frame.
+                PAL_VirtualUnwind(&ex->ContextRecord, NULL);
+                ex->ExceptionRecord.ExceptionAddress = (PVOID)GetIP(&ex->ContextRecord);
+            }
+#ifdef _TARGET_ARM_
+            else if (IsIPinVirtualStub(controlPc)) 
+            {
+                AdjustContextForVirtualStub(&ex->ExceptionRecord, &ex->ContextRecord);
+            }
+#endif
+            fef.InitAndLink(&ex->ContextRecord);
+        }
+
+        DispatchManagedException(*ex, true /* isHardwareException */);
         UNREACHABLE();
     }
     else

@@ -42,6 +42,17 @@
 #define SYM_BUFFER_SIZE (sizeof(IMAGEHLP_SYMBOL) + MAX_SYMBOL_LEN)
 char symBuffer[SYM_BUFFER_SIZE];
 PIMAGEHLP_SYMBOL sym = (PIMAGEHLP_SYMBOL) symBuffer;
+#else
+
+#include <sys/stat.h>
+#include <coreruncommon.h>
+#include <dlfcn.h>
+#include <coreclrhost.h>
+
+void *SymbolReader::coreclrLib;
+ResolveSequencePointDelegate SymbolReader::resolveSequencePointDelegate;
+LoadSymbolsForModuleDelegate SymbolReader::loadSymbolsForModuleDelegate;
+GetLocalVariableName SymbolReader::getLocalVariableNameDelegate;
 #endif // !FEATURE_PAL
 
 const char * const CorElementTypeName[ELEMENT_TYPE_MAX]=
@@ -2716,7 +2727,7 @@ DWORD_PTR *ModuleFromName(__in_opt LPSTR mName, int *numModule)
         ReportOOM();
         return NULL;
     }
-    
+
     WCHAR StringData[MAX_PATH_FNAME];
     char fileName[sizeof(StringData)/2];
     
@@ -6170,7 +6181,6 @@ HRESULT __stdcall PERvaMemoryReader::ReadExecutableAtRVA(DWORD relativeVirtualAd
 
 HRESULT SymbolReader::LoadSymbols(IMetaDataImport * pMD, ICorDebugModule * pModule)
 {
-#ifndef FEATURE_PAL
     HRESULT Status = S_OK;
     if(m_pSymReader != NULL) return S_OK;
     
@@ -6196,15 +6206,99 @@ HRESULT SymbolReader::LoadSymbols(IMetaDataImport * pMD, ICorDebugModule * pModu
     IfFailRet(pModule->GetName(_countof(moduleName), &len, moduleName));
 
     return LoadSymbols(pMD, baseAddress, moduleName, isInMemory);
-#else
-    return E_FAIL;
-#endif // FEATURE_PAL
 }
 
+#ifdef FEATURE_PAL
+bool SymbolReader::SymbolReaderDllExists()
+{
+    struct stat sb;
+    std::string SymbolReaderDll(SymbolReaderDllName);
+    SymbolReaderDll += ".dll";
+    if (stat(SymbolReaderDll.c_str(), &sb) == -1)
+    {
+        return false;
+    }
+    return true;
+}
+HRESULT SymbolReader::LoadCoreCLR()
+{
+    HRESULT Status = S_OK;
+
+    std::string absolutePath, coreClrPath;
+    absolutePath = g_ExtServices->GetCoreClrDirectory();
+    GetDirectory(absolutePath.c_str(), coreClrPath);
+    coreClrPath.append("/");
+    coreClrPath.append(coreClrDll);
+
+    coreclrLib = dlopen(coreClrPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (coreclrLib == nullptr)
+    {
+        fprintf(stderr, "Error: Fail to load %s\n", coreClrPath.c_str());
+        return E_FAIL;
+    }
+    void *hostHandle;
+    unsigned int domainId;
+    coreclr_initialize_ptr initializeCoreCLR =
+        (coreclr_initialize_ptr)dlsym(coreclrLib, "coreclr_initialize");
+
+    // FiXME: We should shutdown coreclr when it is not needed
+    coreclr_shutdown_ptr shutdownCoreCLR =
+        (coreclr_shutdown_ptr)dlsym(coreclrLib, "coreclr_shutdown");
+    std::string tpaList;
+    AddFilesFromDirectoryToTpaList(absolutePath.c_str(), tpaList);
+
+    const char *propertyKeys[] = {
+        "TRUSTED_PLATFORM_ASSEMBLIES", "APP_PATHS", "APP_NI_PATHS",
+        "NATIVE_DLL_SEARCH_DIRECTORIES", "AppDomainCompatSwitch"};
+
+    const char *propertyValues[] = {// TRUSTED_PLATFORM_ASSEMBLIES
+                                    tpaList.c_str(),
+                                    // APP_PATHS
+                                    absolutePath.c_str(),
+                                    // APP_NI_PATHS
+                                    absolutePath.c_str(),
+                                    // NATIVE_DLL_SEARCH_DIRECTORIES
+                                    absolutePath.c_str(),
+                                    // AppDomainCompatSwitch
+                                    "UseLatestBehaviorWhenTFMNotSpecified"};
+    std::string entryPointExecutablePath;
+
+    if (!GetEntrypointExecutableAbsolutePath(entryPointExecutablePath))
+    {
+        perror("Could not get full path to current executable");
+        return E_FAIL;
+    }
+
+    Status =
+        initializeCoreCLR(entryPointExecutablePath.c_str(), "soscorerun",
+                          sizeof(propertyKeys) / sizeof(propertyKeys[0]),
+                          propertyKeys, propertyValues, &hostHandle, &domainId);
+    if (Status != S_OK)
+    {
+        fprintf(stderr, "Error: Fail to initialize CoreCLR\n");
+        return Status;
+    }
+
+    coreclr_create_delegate_ptr CreateDelegate =
+        (coreclr_create_delegate_ptr)dlsym(coreclrLib,
+                                           "coreclr_create_delegate");
+    IfFailRet(CreateDelegate(hostHandle, domainId, SymbolReaderDllName,
+                        SymbolReaderClassName, "ResolveSequencePoint",
+                        (void **)&resolveSequencePointDelegate));
+    IfFailRet(CreateDelegate(hostHandle, domainId, SymbolReaderDllName,
+                        SymbolReaderClassName, "LoadSymbolsForModule",
+                        (void **)&loadSymbolsForModuleDelegate));
+    IfFailRet(CreateDelegate(hostHandle, domainId, SymbolReaderDllName,
+                        SymbolReaderClassName, "GetLocalVariableName",
+                             (void **)&getLocalVariableNameDelegate));
+    return Status;
+}
+#endif //FEATURE_PAL
 HRESULT SymbolReader::LoadSymbols(IMetaDataImport * pMD, ULONG64 baseAddress, __in_z WCHAR* pModuleName, BOOL isInMemory)
 {
+   HRESULT Status = S_OK;
+
 #ifndef FEATURE_PAL
-    HRESULT Status = S_OK;
 
     if(m_pSymReader != NULL) return S_OK;
 
@@ -6270,17 +6364,62 @@ HRESULT SymbolReader::LoadSymbols(IMetaDataImport * pMD, ULONG64 baseAddress, __
     }
     return Status;
 #else
-    return E_FAIL;
+    if (loadSymbolsForModuleDelegate == nullptr)
+    {
+        Status = LoadCoreCLR();
+    }
+    if (Status != S_OK)
+    {
+        return Status;
+    }
+
+    WideCharToMultiByte(CP_ACP, 0, pModuleName, (int) (_wcslen(pModuleName) + 1),
+            m_szModuleName, mdNameLen, NULL, NULL);
+    return !loadSymbolsForModuleDelegate(m_szModuleName);
 #endif // FEATURE_PAL
 }
 
 HRESULT SymbolReader::GetNamedLocalVariable(ISymUnmanagedScope * pScope, ICorDebugILFrame * pILFrame, mdMethodDef methodToken, ULONG localIndex, __inout_ecount(paramNameLen) WCHAR* paramName, ULONG paramNameLen, ICorDebugValue** ppValue)
 {
     HRESULT Status = S_OK;
+#ifdef FEATURE_PAL
+    if (getLocalVariableNameDelegate == nullptr)
+    {
+        Status = LoadCoreCLR();
+    }
+    if (Status != S_OK)
+    {
+        return Status;
+    }
+    BSTR wszParamName = SysAllocStringLen(0, mdNameLen);
+    if (wszParamName == NULL)
+    {
+        return E_OUTOFMEMORY;
+    }
+    int ret = getLocalVariableNameDelegate(m_szModuleName, methodToken,
+                                       localIndex, &wszParamName);
+    if (ret)
+    {
+        wcscpy_s(paramName, _wcslen(wszParamName) + 1, wszParamName);
+        paramNameLen = _wcslen(paramName);
+        SysFreeString(wszParamName);
 
+        if (SUCCEEDED(pILFrame->GetLocalVariable(localIndex, ppValue)) && (*ppValue != NULL))
+        {
+            return S_OK;
+        }
+        else
+        {
+            *ppValue = NULL;
+            return E_FAIL;
+        }
+    }
+    SysFreeString(wszParamName);
+    return E_FAIL;
+
+#else
     if(pScope == NULL)
     {
-#ifndef FEATURE_PAL
         ToRelease<ISymUnmanagedMethod> pSymMethod;
         IfFailRet(m_pSymReader->GetMethod(methodToken, &pSymMethod));
 
@@ -6288,9 +6427,6 @@ HRESULT SymbolReader::GetNamedLocalVariable(ISymUnmanagedScope * pScope, ICorDeb
         IfFailRet(pSymMethod->GetRootScope(&pScope));
 
         return GetNamedLocalVariable(pScope, pILFrame, methodToken, localIndex, paramName, paramNameLen, ppValue);
-#else
-        return E_FAIL;
-#endif // FEATURE_PAL
     }
     else
     {
@@ -6308,7 +6444,7 @@ HRESULT SymbolReader::GetNamedLocalVariable(ISymUnmanagedScope * pScope, ICorDeb
                 if(varIndexInMethod != localIndex)
                     continue;
 
-                ULONG32 nameLen = 0; 
+                ULONG32 nameLen = 0;
                 if(FAILED(pLocals[i]->GetName(paramNameLen, &nameLen, paramName)))
                         swprintf_s(paramName, paramNameLen, W("local_%d\0"), localIndex);
 
@@ -6344,7 +6480,9 @@ HRESULT SymbolReader::GetNamedLocalVariable(ISymUnmanagedScope * pScope, ICorDeb
         for(ULONG j = 0; j < numChildren; j++) pChildren[j]->Release();
 
     }
+
     return E_FAIL;
+#endif // FEATURE_PAL
 }
 
 HRESULT SymbolReader::GetNamedLocalVariable(ICorDebugFrame * pFrame, ULONG localIndex, __inout_ecount(paramNameLen) WCHAR* paramName, ULONG paramNameLen, ICorDebugValue** ppValue)
@@ -6370,10 +6508,11 @@ HRESULT SymbolReader::GetNamedLocalVariable(ICorDebugFrame * pFrame, ULONG local
     return GetNamedLocalVariable(NULL, pILFrame, methodDef, localIndex, paramName, paramNameLen, ppValue);
 }
 
-HRESULT SymbolReader::ResolveSequencePoint(__in_z WCHAR* pFilename, ULONG32 lineNumber, mdMethodDef* pToken, ULONG32* pIlOffset)
+HRESULT SymbolReader::ResolveSequencePoint(__in_z WCHAR* pFilename, ULONG32 lineNumber, TADDR mod, mdMethodDef* pToken, ULONG32* pIlOffset)
 {
-#ifndef FEATURE_PAL
     HRESULT Status = S_OK;
+
+#ifndef FEATURE_PAL
     ULONG32 cDocs = 0;
     ULONG32 cDocsNeeded = 0;
     ArrayHolder<ToRelease<ISymUnmanagedDocument>> pDocs = NULL;
@@ -6430,8 +6569,30 @@ HRESULT SymbolReader::ResolveSequencePoint(__in_z WCHAR* pFilename, ULONG32 line
         }
         return S_OK;
     }
-#endif // FEATURE_PAL
     return E_FAIL;
+#else
+    if (loadSymbolsForModuleDelegate == nullptr)
+    {
+        Status = LoadCoreCLR();
+    }
+    if (Status != S_OK)
+    {
+        return Status;
+    }
+
+    char szName[mdNameLen];
+     WideCharToMultiByte(CP_ACP, 0, pFilename, (int) (_wcslen(pFilename) + 1),
+            szName, mdNameLen, NULL, NULL);
+
+    WCHAR FileNameW[MAX_LONGPATH];
+    char FileName[MAX_LONGPATH];
+    FileNameForModule(mod, FileNameW);
+
+    WideCharToMultiByte(CP_ACP, 0, FileNameW, (int) (_wcslen(FileNameW) + 1), FileName, MAX_LONGPATH, NULL, NULL);
+    Status = resolveSequencePointDelegate(FileName, szName, lineNumber, pToken, pIlOffset);
+
+    return Status;
+#endif // FEATURE_PAL
 }
 
 static void AddAssemblyName(WString& methodOutput, CLRDATA_ADDRESS mdesc)

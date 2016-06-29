@@ -12,6 +12,7 @@ add_definitions(-DFEATURE_LEAVE_RUNTIME_HOLDER=1)
 add_definitions(-DUNICODE)
 add_definitions(-D_UNICODE)
 
+
 if(CMAKE_CONFIGURATION_TYPES) # multi-configuration generator?
   foreach (Config DEBUG CHECKED)  
      set_property(DIRECTORY APPEND PROPERTY COMPILE_DEFINITIONS $<$<CONFIG:${Config}>:WRITE_BARRIER_CHECK=1>)
@@ -62,15 +63,8 @@ set(VM_SOURCES_DAC_AND_WKS_COMMON
     formattype.cpp
     fptrstubs.cpp
     frames.cpp
-    ../gc/gccommon.cpp
-    ../gc/gcscan.cpp
-    ../gc/gcsvr.cpp
-    ../gc/gcwks.cpp
     genericdict.cpp
     generics.cpp
-    ../gc/handletable.cpp
-    ../gc/handletablecore.cpp
-    ../gc/handletablescan.cpp
     hash.cpp
     hillclimbing.cpp
     ilstubcache.cpp
@@ -85,7 +79,6 @@ set(VM_SOURCES_DAC_AND_WKS_COMMON
     methoditer.cpp
     methodtable.cpp
     object.cpp
-    ../gc/objecthandle.cpp
     pefile.cpp
     peimage.cpp
     peimagelayout.cpp
@@ -98,7 +91,6 @@ set(VM_SOURCES_DAC_AND_WKS_COMMON
     securitydescriptorassembly.cpp
     sigformat.cpp
     siginfo.cpp
-    ../gc/softwarewritewatch.cpp
     stackwalk.cpp
     stublink.cpp
     stubmgr.cpp
@@ -176,9 +168,6 @@ set(VM_SOURCES_WKS
     gcenv.os.cpp
     gchelpers.cpp
     genmeth.cpp
-    ../gc/gceesvr.cpp
-    ../gc/gceewks.cpp
-    ../gc/handletablecache.cpp
     hosting.cpp
     ibclogger.cpp
     ilmarshalers.cpp

@@ -276,6 +276,16 @@
         </ExcludeList>
     </ItemGroup>
 
+    <!-- GC.GetGeneration on weak references -->
+    <ItemGroup>
+        <ExcludeList Include="$(XunitTestBinBase)\GC\API\GC\GetGenerationWR\GetGenerationWR.cmd">
+            <Issue>5514</Issue>
+        </ExcludeList>
+        <ExcludeList Include="$(XunitTestBinBase)\GC\API\GC\GetGenerationWR2\GetGenerationWR2.cmd">
+            <Issue>5514</Issue>
+        </ExcludeList>
+    </ItemGroup>
+
     <!-- Tests that need to be triaged for vararg usage as that is not supported -->
     <ItemGroup Condition="'$(XunitTestBinBase)' != ''">
         <ExcludeList Include="$(XunitTestBinBase)\JIT\Directed\PREFIX\unaligned\1\arglist\arglist.cmd">
@@ -454,6 +464,9 @@
         </ExcludeList>
         <ExcludeList Include="$(XunitTestBinBase)\JIT\Regression\Dev11\Dev11_468598\Test_HndIndex_10_Reordered\Test_HndIndex_10_Reordered.cmd">
             <Issue>5286</Issue>
+        </ExcludeList>
+        <ExcludeList Include="$(XunitTestBinBase)\JIT\Performance\CodeQuality\Math\Functions\Functions\Functions.cmd">
+            <Issue>5430</Issue>
         </ExcludeList>
     </ItemGroup>
 </Project>

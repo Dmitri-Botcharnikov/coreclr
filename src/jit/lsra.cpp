@@ -1026,8 +1026,6 @@ LinearScan::LinearScan(Compiler * theCompiler)
 
     compiler->codeGen->intRegState.rsIsFloat   = false;
     compiler->codeGen->floatRegState.rsIsFloat = true;
-    compiler->codeGen->intRegState.rsMaxRegArgNum   = MAX_REG_ARG;
-    compiler->codeGen->floatRegState.rsMaxRegArgNum = MAX_FLOAT_REG_ARG;
 
     // Block sequencing (the order in which we schedule).
     // Note that we don't initialize the bbVisitedSet until we do the first traversal
@@ -2553,10 +2551,9 @@ LinearScan::getKillSetForNode(GenTree* tree)
         killMask = compiler->compHelperCallKillSet(CORINFO_HELP_STOP_FOR_GC);
         break;
     case GT_CALL:
-        // if there is no FP used, we can ignore the FP kills
+#ifdef _TARGET_X86_
         if (compiler->compFloatingPointUsed)
         {
-#ifdef _TARGET_X86_
             if (tree->TypeGet() == TYP_DOUBLE)
             {
                 needDoubleTmpForFPCall = true;
@@ -2565,12 +2562,25 @@ LinearScan::getKillSetForNode(GenTree* tree)
             {
                 needFloatTmpForFPCall = true;
             }
-#endif // _TARGET_X86_
-            killMask = RBM_CALLEE_TRASH;
+        }
+        if (tree->IsHelperCall())
+        {
+            GenTreeCall* call = tree->AsCall();
+            CorInfoHelpFunc helpFunc = compiler->eeGetHelperNum(call->gtCallMethHnd);
+            killMask = compiler->compHelperCallKillSet(helpFunc);
         }
         else
+#endif // _TARGET_X86_
         {
-            killMask = RBM_INT_CALLEE_TRASH;
+            // if there is no FP used, we can ignore the FP kills
+            if (compiler->compFloatingPointUsed)
+            {
+                killMask = RBM_CALLEE_TRASH;
+            }
+            else
+            {
+                killMask = RBM_INT_CALLEE_TRASH;
+            }
         }
         break;
     case GT_STOREIND:
@@ -3463,8 +3473,8 @@ LinearScan::updateRegStateForArg(LclVarDsc* argDsc)
     else
 #endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     {
-        RegState              * intRegState = &compiler->codeGen->intRegState;
-        RegState              * floatRegState = &compiler->codeGen->floatRegState;
+        RegState*  intRegState   = &compiler->codeGen->intRegState;
+        RegState*  floatRegState = &compiler->codeGen->floatRegState;
         // In the case of AMD64 we'll still use the floating point registers
         // to model the register usage for argument on vararg calls, so
         // we will ignore the varargs condition to determine whether we use 
@@ -3684,7 +3694,10 @@ LinearScan::buildIntervals()
             continue;
         }
 
-        if (argDsc->lvIsRegArg) updateRegStateForArg(argDsc);
+        if (argDsc->lvIsRegArg)
+        {
+            updateRegStateForArg(argDsc);
+        }
 
         if (isCandidateVar(argDsc))
         {

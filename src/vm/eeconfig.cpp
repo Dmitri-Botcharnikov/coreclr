@@ -512,6 +512,9 @@ HRESULT EEConfig::Cleanup()
     if (pRequireZapsExcludeList)
         delete pRequireZapsExcludeList;
 
+    if (pReadyToRunExcludeList)
+        delete pReadyToRunExcludeList;
+
 #ifdef _DEBUG
     if (pForbidZapsList)
         delete pForbidZapsList;
@@ -998,6 +1001,17 @@ HRESULT EEConfig::sync()
                 pRequireZapsExcludeList = new AssemblyNamesList(wszZapRequireExcludeList);
         }
     }
+
+    pReadyToRunExcludeList = NULL;
+#if defined(FEATURE_READYTORUN)
+    if (ReadyToRunInfo::IsReadyToRunEnabled())
+    {
+        NewArrayHolder<WCHAR> wszReadyToRunExcludeList;
+        IfFailRet(CLRConfig::GetConfigValue(CLRConfig::EXTERNAL_ReadyToRunExcludeList, &wszReadyToRunExcludeList));
+        if (wszReadyToRunExcludeList)
+            pReadyToRunExcludeList = new AssemblyNamesList(wszReadyToRunExcludeList);
+    }
+#endif // defined(FEATURE_READYTORUN)
 
 #ifdef _DEBUG
     iForbidZaps     = CLRConfig::GetConfigValue(CLRConfig::INTERNAL_NgenBind_ZapForbid) != 0;
@@ -1872,6 +1886,16 @@ bool EEConfig::ForbidZap(LPCUTF8 assemblyName) const
     return false;
 }
 #endif
+
+bool EEConfig::ExcludeReadyToRun(LPCUTF8 assemblyName) const
+{
+    LIMITED_METHOD_CONTRACT;
+
+    if (pReadyToRunExcludeList != NULL && pReadyToRunExcludeList->IsInList(assemblyName))
+        return true;
+
+    return false;
+}
 
 #ifdef _TARGET_AMD64_
 bool EEConfig::DisableNativeImageLoad(LPCUTF8 assemblyName) const

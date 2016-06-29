@@ -1,33 +1,34 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), dir.props))\dir.props" />
-
   <PropertyGroup>
-    <Version>1.0.2</Version>
+    <Version>1.0.4</Version>
     <SkipPackageFileCheck>true</SkipPackageFileCheck>
     <SkipValidatePackage>true</SkipValidatePackage>
-    <PackagePlatforms>x64;x86;arm</PackagePlatforms>
+    <PackagePlatforms>x64;x86;arm64;arm</PackagePlatforms>
     <OutputPath>$(PackagesOutputPath)</OutputPath>
     <IncludeRuntimeJson>true</IncludeRuntimeJson>
   </PropertyGroup>
-
   <ItemGroup>
+    <!-- Declare a runtime dependency on the win8-arm CoreCLR built using the TFS builds -->
+    <RuntimeDependency Include="runtime.win8-arm.Microsoft.NETCore.Runtime.CoreCLR">
+      <TargetRuntime>win8-arm</TargetRuntime>
+      <Version>1.0.4-$(ExternalExpectedPrerelease)</Version>
+    </RuntimeDependency>
     <!-- ApiSets are only applicable for Windows. 
          Despite the unconditioned package dependency it is constrained by runtime IDs within it's own package -->
     <Dependency Include="Microsoft.NETCore.Windows.ApiSets">
-      <Version>1.0.1-rc3-23915</Version>
+      <Version>1.0.2-$(ExternalExpectedPrerelease)</Version>
     </Dependency>
-    <Dependency Include="Microsoft.NETCore.Jit">
-      <Version>1.0.2$(VersionSuffix)</Version>
-    </Dependency>
+    <ProjectReference Include="..\Microsoft.NETCore.Jit\Microsoft.NETCore.Jit.pkgproj" />
     <ProjectReference Include="win\Microsoft.NETCore.Runtime.CoreCLR.pkgproj">
       <Platform>amd64</Platform>
     </ProjectReference>
     <ProjectReference Include="win\Microsoft.NETCore.Runtime.CoreCLR.pkgproj">
-      <Platform>x86</Platform>
+      <Platform>arm64</Platform>
     </ProjectReference>
     <ProjectReference Include="win\Microsoft.NETCore.Runtime.CoreCLR.pkgproj">
-      <Platform>arm</Platform>
+      <Platform>x86</Platform>
     </ProjectReference>
     <ProjectReference Include="debian\Microsoft.NETCore.Runtime.CoreCLR.pkgproj">
       <Platform>amd64</Platform>
@@ -51,6 +52,5 @@
       <Platform>amd64</Platform>
     </ProjectReference>
   </ItemGroup>
-
   <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildThisFileDirectory), dir.targets))\dir.targets" />
 </Project>
