@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for more information.
 //*****************************************************************************
 // File: gdbjit.cpp
-// 
+//
 
 //
 // NotifyGdb implementation.
@@ -30,61 +30,77 @@ BYTE* DebugInfoStoreNew(void * pData, size_t cBytes)
 }
 
 HRESULT
-GetMethodNativeMap(MethodDesc *methodDesc, TADDR address, ULONG32 *numMap,
-                   DebuggerILToNativeMap **map, bool *mapAllocated,
-                   CLRDATA_ADDRESS *codeStart, ULONG32 *codeOffset) {
-  _ASSERTE((codeOffset == NULL) || (address != NULL));
+GetMethodNativeMap(MethodDesc* methodDesc,
+                   TADDR address,
+                   ULONG32* numMap,
+                   DebuggerILToNativeMap** map,
+                   bool* mapAllocated,
+                   CLRDATA_ADDRESS* codeStart,
+                   ULONG32* codeOffset)
+{
+    _ASSERTE((codeOffset == NULL) || (address != NULL));
 
-  // Use the DebugInfoStore to get IL->Native maps.
-  // It doesn't matter whether we're jitted, ngenned etc.
+    // Use the DebugInfoStore to get IL->Native maps.
+    // It doesn't matter whether we're jitted, ngenned etc.
 
-  DebugInfoRequest request;
-  TADDR nativeCodeStartAddr = PCODEToPINSTR(methodDesc->GetNativeCode());
-  request.InitFromStartingAddr(methodDesc, nativeCodeStartAddr);
+    DebugInfoRequest request;
+    TADDR nativeCodeStartAddr = PCODEToPINSTR(methodDesc->GetNativeCode());
+    request.InitFromStartingAddr(methodDesc, nativeCodeStartAddr);
 
-  // Bounds info.
-  ULONG32 countMapCopy;
-  NewHolder<ICorDebugInfo::OffsetMapping> mapCopy(NULL);
+    // Bounds info.
+    ULONG32 countMapCopy;
+    NewHolder<ICorDebugInfo::OffsetMapping> mapCopy(NULL);
 
-  BOOL success = DebugInfoManager::GetBoundariesAndVars(
-      request, DebugInfoStoreNew, NULL, // allocator
-      &countMapCopy, &mapCopy, NULL, NULL);
+    BOOL success = DebugInfoManager::GetBoundariesAndVars(request,
+                                                          DebugInfoStoreNew,
+                                                          NULL, // allocator
+                                                          &countMapCopy,
+                                                          &mapCopy,
+                                                          NULL,
+                                                          NULL);
 
-  if (!success) {
-    return E_FAIL;
-  }
-
-  // Need to convert map formats.
-  *numMap = countMapCopy;
-
-  *map = new (nothrow) DebuggerILToNativeMap[countMapCopy];
-  if (!*map) {
-    return E_OUTOFMEMORY;
-  }
-
-  ULONG32 i;
-  for (i = 0; i < *numMap; i++) {
-    (*map)[i].ilOffset = mapCopy[i].ilOffset;
-    (*map)[i].nativeStartOffset = mapCopy[i].nativeOffset;
-    if (i > 0) {
-      (*map)[i - 1].nativeEndOffset = (*map)[i].nativeStartOffset;
+    if (!success)
+    {
+        return E_FAIL;
     }
-    (*map)[i].source = mapCopy[i].source;
-  }
-  if (*numMap >= 1) {
-    (*map)[i - 1].nativeEndOffset = 0;
-  }
 
-  // Update varion out params.
-  if (codeStart) {
-    *codeStart = nativeCodeStartAddr;
-  }
-  if (codeOffset) {
-    *codeOffset = (ULONG32)(address - nativeCodeStartAddr);
-  }
+    // Need to convert map formats.
+    *numMap = countMapCopy;
 
-  *mapAllocated = true;
-  return S_OK;
+    *map = new (nothrow) DebuggerILToNativeMap[countMapCopy];
+    if (!*map)
+    {
+        return E_OUTOFMEMORY;
+    }
+
+    ULONG32 i;
+    for (i = 0; i < *numMap; i++)
+    {
+        (*map)[i].ilOffset = mapCopy[i].ilOffset;
+        (*map)[i].nativeStartOffset = mapCopy[i].nativeOffset;
+        if (i > 0)
+        {
+            (*map)[i - 1].nativeEndOffset = (*map)[i].nativeStartOffset;
+        }
+        (*map)[i].source = mapCopy[i].source;
+    }
+    if (*numMap >= 1)
+    {
+        (*map)[i - 1].nativeEndOffset = 0;
+    }
+
+    // Update varion out params.
+    if (codeStart)
+    {
+        *codeStart = nativeCodeStartAddr;
+    }
+    if (codeOffset)
+    {
+        *codeOffset = (ULONG32)(address - nativeCodeStartAddr);
+    }
+
+    *mapAllocated = true;
+    return S_OK;
 }
 
 // GDB JIT interface
@@ -143,7 +159,6 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     printf("NotifyGdb::MethodCompiled %p\n", MethodDescPtr);
     PCODE pCode = MethodDescPtr->GetNativeCode();
     unsigned long line = 0;
-    wchar_t *source = new wchar_t[1024];
     DebuggerILToNativeMap* map = NULL;
     bool mapAllocated = false;
 
@@ -152,14 +167,29 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
 
     GetMethodNativeMap(MethodDescPtr, 0, &numMap, &map, &mapAllocated,
                        &codeStart, NULL);
-
+    const Module *mod = MethodDescPtr->GetMethodTable()->GetModule();
+    SString modName = mod->GetFile()->GetPath();
+    StackScratchBuffer scratch;
+    const char *szModName = modName.GetUTF8(scratch);
     for (ULONG32 i = 0; i < numMap; i++)
     {
-        if (map[i].ilOffset != ICorDebugInfo::NO_MAPPING && map[i].ilOffset != ICorDebugInfo::PROLOG &&
-            map[i].ilOffset != ICorDebugInfo::EPILOG) {
-            printf("IL offsets: %p\t", map[i].ilOffset);
-            getLineByILOffsetDelegate("/home/epavlov/coreclr-demo/runtime/hello3.exe", MethodDescPtr->GetMemberDef() , map[i].ilOffset, &line, &source);
-            printf("Source: %S @ %d\n", source, line);
+        if (map[i].ilOffset != ICorDebugInfo::NO_MAPPING &&
+            map[i].ilOffset != ICorDebugInfo::PROLOG &&
+            map[i].ilOffset != ICorDebugInfo::EPILOG)
+        {
+            BSTR source = SysAllocStringLen(0, 1024);
+
+            getLineByILOffsetDelegate(szModName,
+                                      MethodDescPtr->GetMemberDef(),
+                                      map[i].ilOffset,
+                                      &line,
+                                      &source);
+            if (SysStringLen(source) > 0)
+            {
+                printf("IL offsets: %p\t", map[i].ilOffset);
+                printf("Source: %S @ %d\n", source, line);
+            }
+            SysFreeString(source);
         }
     }
 
