@@ -30,7 +30,7 @@
 // If set to 1, server GC is enabled on startup. If 0, server GC is
 // disabled. Server GC is off by default.
 static const char* serverGcVar = "CORECLR_SERVER_GC";
-GetLineByILOffsetDelegate getLineByILOffsetDelegate;
+GetInfoForMethodDelegate getInfoForMethodDelegate;
 #if defined(__linux__)
 #define symlinkEntrypointExecutable "/proc/self/exe"
 #elif !defined(__APPLE__)
@@ -384,9 +384,12 @@ int ExecuteManagedAssembly(
                 (coreclr_create_delegate_ptr)dlsym(coreclrLib,
                                            "coreclr_create_delegate");
 
+                // st = CreateDelegate(hostHandle, domainId, "System.Diagnostics.Debug.SymbolReader",
+                //           "System.Diagnostics.Debug.SymbolReader.SymbolReader", "GetLineByILOffset",
+                //           (void **)&getLineByILOffsetDelegate);
                 st = CreateDelegate(hostHandle, domainId, "System.Diagnostics.Debug.SymbolReader",
-                          "System.Diagnostics.Debug.SymbolReader.SymbolReader", "GetLineByILOffset",
-                          (void **)&getLineByILOffsetDelegate);
+                          "System.Diagnostics.Debug.SymbolReader.SymbolReader", "GetInfoForMethod",
+                          (void **)&getInfoForMethodDelegate);
 
                 if (!SUCCEEDED(st))
                 {

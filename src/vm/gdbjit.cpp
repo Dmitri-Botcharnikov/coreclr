@@ -102,12 +102,15 @@ GetMethodNativeMap(MethodDesc* methodDesc,
     *mapAllocated = true;
     return S_OK;
 }
+
 struct LineInfo
 {
     int lineNumber, ilOffset, nativeOffset;
+    char16_t fileName[MAX_PATH_FNAME];
 };
+
 HRESULT
-GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* lineInfoLen, BSTR* fileName)
+GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* lineInfoLen)
 {
     unsigned long line = 0;
     DebuggerILToNativeMap* map = NULL;
@@ -121,36 +124,37 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* l
     SString modName = mod->GetFile()->GetPath();
     StackScratchBuffer scratch;
     const char* szModName = modName.GetUTF8(scratch);
-    *lines = new (nothrow) LineInfo[numMap];
+    MethodDebugInfo *methodDebugInfo = new (nothrow )MethodDebugInfo();
+    if (methodDebugInfo == nullptr)
+        return E_OUTOFMEMORY;
+    methodDebugInfo->points = (SequencePointInfo*) CoTaskMemAlloc(sizeof(SequencePointInfo) * numMap);
+    if (methodDebugInfo->points == nullptr)
+        return E_OUTOFMEMORY;
+    methodDebugInfo->size = numMap;
+    getInfoForMethodDelegate(szModName, MethodDescPtr->GetMemberDef(), *methodDebugInfo);
+
+    ULONG ilCount = methodDebugInfo->size;
+
+    *lines = new (nothrow) LineInfo[ilCount];
     if (*lines == nullptr)
         return E_FAIL;
-    ULONG ilCount = 0;
-    for (ULONG32 i = 0; i < numMap; i++)
+
+    for (ULONG32 i = 0; i < methodDebugInfo->size; i++)
     {
-        if (map[i].ilOffset != ICorDebugInfo::NO_MAPPING && map[i].ilOffset != ICorDebugInfo::PROLOG &&
-            map[i].ilOffset != ICorDebugInfo::EPILOG && map[i].ilOffset != ICorDebugInfo::MAX_MAPPING_VALUE)
+        for (ULONG32 j = 0; j < numMap; j++)
         {
-            if (ilCount != 0)
+            if (methodDebugInfo->points[i].ilOffset == map[j].ilOffset)
             {
-                BSTR tmp[MAX_PATH_FNAME];
-                getLineByILOffsetDelegate(
-                    szModName, MethodDescPtr->GetMemberDef(), map[i].ilOffset, &line, (BSTR*)&tmp);
-            }
-            else
-            {
-                getLineByILOffsetDelegate(szModName, MethodDescPtr->GetMemberDef(), map[i].ilOffset, &line, fileName);
-            }
-            if (line != 0)
-            {
-                (*lines)[ilCount].nativeOffset = map[i].nativeStartOffset;
-                (*lines)[ilCount].ilOffset = map[i].ilOffset;
-                (*lines)[ilCount].lineNumber = line;
-                ilCount++;
+                (*lines)[i].nativeOffset = map[j].nativeStartOffset;
+                (*lines)[i].ilOffset = map[j].ilOffset;
+                wcscpy((*lines)[i].fileName, methodDebugInfo->points[i].fileName);
+                (*lines)[i].lineNumber = methodDebugInfo->points[i].lineNumber;
             }
         }
     }
-    *lineInfoLen = ilCount;
 
+    *lineInfoLen = ilCount;
+    CoTaskMemFree(methodDebugInfo->points);
     return S_OK;
 }
 
@@ -212,9 +216,8 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     printf("Native code start: %p\n", pCode);
     unsigned int lineInfoLen = 0;
     LineInfo* lines = nullptr;
-    BSTR fileName = SysAllocStringLen(0, MAX_PATH_FNAME);
 
-    HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &lines, &lineInfoLen, &fileName);
+    HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &lines, &lineInfoLen);
     if (lineInfoLen == 0)
     {
         printf("Can't get debug info from portable PDB.\n");
@@ -222,10 +225,9 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     }
     for (unsigned int i = 0; i < lineInfoLen; i++)
     {
-        printf("Native offset: %d  Source: %S Line: %d\n", lines[i].nativeOffset, fileName, lines[i].lineNumber);
+        printf("Native offset: %d  Source: %S Line: %d\n", lines[i].nativeOffset, lines[i].fileName, lines[i].lineNumber);
     }
     delete[] lines;
-    SysFreeString(fileName);
 
     jit_code_entry* jit_symbols = new jit_code_entry;
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;
