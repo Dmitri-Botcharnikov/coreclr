@@ -31,15 +31,9 @@ BYTE* DebugInfoStoreNew(void * pData, size_t cBytes)
 
 HRESULT
 GetMethodNativeMap(MethodDesc* methodDesc,
-                   TADDR address,
                    ULONG32* numMap,
-                   DebuggerILToNativeMap** map,
-                   bool* mapAllocated,
-                   CLRDATA_ADDRESS* codeStart,
-                   ULONG32* codeOffset)
+                   DebuggerILToNativeMap** map)
 {
-    _ASSERTE((codeOffset == NULL) || (address != NULL));
-
     // Use the DebugInfoStore to get IL->Native maps.
     // It doesn't matter whether we're jitted, ngenned etc.
 
@@ -88,42 +82,30 @@ GetMethodNativeMap(MethodDesc* methodDesc,
     {
         (*map)[i - 1].nativeEndOffset = 0;
     }
-
-    // Update varion out params.
-    if (codeStart)
-    {
-        *codeStart = nativeCodeStartAddr;
-    }
-    if (codeOffset)
-    {
-        *codeOffset = (ULONG32)(address - nativeCodeStartAddr);
-    }
-
-    *mapAllocated = true;
     return S_OK;
 }
 
-struct LineInfo
+struct SymbolsInfo
 {
     int lineNumber, ilOffset, nativeOffset;
     char16_t fileName[MAX_PATH_FNAME];
 };
 
 HRESULT
-GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* lineInfoLen)
+GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned int &symInfoLen)
 {
-    unsigned long line = 0;
     DebuggerILToNativeMap* map = NULL;
-    bool mapAllocated = false;
 
     ULONG32 numMap;
-    CLRDATA_ADDRESS codeStart;
 
-    GetMethodNativeMap(MethodDescPtr, 0, &numMap, &map, &mapAllocated, &codeStart, NULL);
+    if (GetMethodNativeMap(MethodDescPtr, &numMap, &map) != S_OK)
+        return E_FAIL;
+
     const Module* mod = MethodDescPtr->GetMethodTable()->GetModule();
     SString modName = mod->GetFile()->GetPath();
     StackScratchBuffer scratch;
     const char* szModName = modName.GetUTF8(scratch);
+
     MethodDebugInfo *methodDebugInfo = new (nothrow )MethodDebugInfo();
     if (methodDebugInfo == nullptr)
         return E_OUTOFMEMORY;
@@ -133,27 +115,25 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, LineInfo** lines, unsigned int* l
     methodDebugInfo->size = numMap;
     getInfoForMethodDelegate(szModName, MethodDescPtr->GetMemberDef(), *methodDebugInfo);
 
-    ULONG ilCount = methodDebugInfo->size;
-
-    *lines = new (nothrow) LineInfo[ilCount];
-    if (*lines == nullptr)
+    symInfoLen = methodDebugInfo->size;
+    *symInfo = new (nothrow) SymbolsInfo[symInfoLen];
+    if (*symInfo == nullptr)
         return E_FAIL;
 
-    for (ULONG32 i = 0; i < methodDebugInfo->size; i++)
+    for (ULONG32 i = 0; i < symInfoLen; i++)
     {
         for (ULONG32 j = 0; j < numMap; j++)
         {
             if (methodDebugInfo->points[i].ilOffset == map[j].ilOffset)
             {
-                (*lines)[i].nativeOffset = map[j].nativeStartOffset;
-                (*lines)[i].ilOffset = map[j].ilOffset;
-                wcscpy((*lines)[i].fileName, methodDebugInfo->points[i].fileName);
-                (*lines)[i].lineNumber = methodDebugInfo->points[i].lineNumber;
+                (*symInfo)[i].nativeOffset = map[j].nativeStartOffset;
+                (*symInfo)[i].ilOffset = map[j].ilOffset;
+                wcscpy((*symInfo)[i].fileName, methodDebugInfo->points[i].fileName);
+                (*symInfo)[i].lineNumber = methodDebugInfo->points[i].lineNumber;
             }
         }
     }
 
-    *lineInfoLen = ilCount;
     CoTaskMemFree(methodDebugInfo->points);
     return S_OK;
 }
@@ -193,7 +173,7 @@ struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
 
 // END of GDB JIT interface
 
-//  lines[] = {
+//  symInfo[] = {
 //     { "hello3.cs", 8, 0, 55},
 //     { "hello3.cs", 9, 1, 56},
 //     { "hello3.cs", 10, 7, 73},
@@ -214,20 +194,20 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     if (pCode == NULL)
         return;
     printf("Native code start: %p\n", pCode);
-    unsigned int lineInfoLen = 0;
-    LineInfo* lines = nullptr;
+    unsigned int symInfoLen = 0;
+    SymbolsInfo* symInfo = nullptr;
 
-    HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &lines, &lineInfoLen);
-    if (lineInfoLen == 0)
+    HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &symInfo, symInfoLen);
+    if (symInfoLen == 0)
     {
         printf("Can't get debug info from portable PDB.\n");
         return;
     }
-    for (unsigned int i = 0; i < lineInfoLen; i++)
+    for (unsigned int i = 0; i < symInfoLen; i++)
     {
-        printf("Native offset: %d  Source: %S Line: %d\n", lines[i].nativeOffset, lines[i].fileName, lines[i].lineNumber);
+        printf("Native offset: %d  Source: %S Line: %d\n", symInfo[i].nativeOffset, symInfo[i].fileName, symInfo[i].lineNumber);
     }
-    delete[] lines;
+    delete[] symInfo;
 
     jit_code_entry* jit_symbols = new jit_code_entry;
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;
