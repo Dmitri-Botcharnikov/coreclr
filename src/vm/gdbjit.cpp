@@ -113,7 +113,9 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned i
     if (methodDebugInfo->points == nullptr)
         return E_OUTOFMEMORY;
     methodDebugInfo->size = numMap;
-    getInfoForMethodDelegate(szModName, MethodDescPtr->GetMemberDef(), *methodDebugInfo);
+
+    if (!getInfoForMethodDelegate(szModName, MethodDescPtr->GetMemberDef(), *methodDebugInfo))
+        return E_FAIL;
 
     symInfoLen = methodDebugInfo->size;
     *symInfo = new (nothrow) SymbolsInfo[symInfoLen];
@@ -126,10 +128,13 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned i
         {
             if (methodDebugInfo->points[i].ilOffset == map[j].ilOffset)
             {
-                (*symInfo)[i].nativeOffset = map[j].nativeStartOffset;
-                (*symInfo)[i].ilOffset = map[j].ilOffset;
-                wcscpy((*symInfo)[i].fileName, methodDebugInfo->points[i].fileName);
-                (*symInfo)[i].lineNumber = methodDebugInfo->points[i].lineNumber;
+                SymbolsInfo& s = (*symInfo)[i];
+                const SequencePointInfo& sp = methodDebugInfo->points[i];
+
+                s.nativeOffset = map[j].nativeStartOffset;
+                s.ilOffset = map[j].ilOffset;
+                wcscpy(s.fileName, sp.fileName);
+                s.lineNumber = sp.lineNumber;
             }
         }
     }
