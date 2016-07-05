@@ -483,10 +483,6 @@ private:
         unsigned MemSize;
         MemBuf() : MemPtr(0), MemSize(0)
         {}
-        //~MemBuf()
-        //{
-        //    delete[] MemPtr;
-        //}
     };
 
     static bool BuildELFHeader(MemBuf& buf);

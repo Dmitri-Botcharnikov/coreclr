@@ -391,6 +391,16 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     offset +=  dbgLine.MemSize;
     memcpy(elfFile.MemPtr + offset, sectHeaders.MemPtr, sectHeaders.MemSize);
     
+    delete[] elfHeader.MemPtr;
+    delete[] sectStr.MemPtr;
+    delete[] dbgStr.MemPtr;
+    delete[] dbgAbbrev.MemPtr;
+    delete[] dbgInfo.MemPtr;
+    delete[] dbgPubname.MemPtr;
+    delete[] dbgPubType.MemPtr;
+    delete[] dbgLine.MemPtr;
+    delete[] sectHeaders.MemPtr;
+    
     jit_code_entry* jit_symbols = new jit_code_entry;
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;
     jit_symbols->symfile_addr = elfFile.MemPtr;
@@ -425,6 +435,8 @@ bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr)
     memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader) + 1, fileTable.MemPtr, fileTable.MemSize);
     memcpy(buf.MemPtr + sizeof(DwarfLineNumHeader) + 1 + fileTable.MemSize, lineProg.MemPtr, lineProg.MemSize);
     
+    delete[] fileTable.MemPtr;
+    delete[] lineProg.MemPtr;
     
     return true;
 }
@@ -483,7 +495,6 @@ void NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr)
     char* ptr = buf.MemPtr;
     
     IssueSetAddress(ptr, startAddr);
-    //IssueSimpleCommand(ptr, DW_LNS_set_prologue_end);
     
     int prevLine = 1, prevAddr = 0;
     
