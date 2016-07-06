@@ -470,6 +470,12 @@ struct __attribute__((packed)) DwarfLineNumHeader
     uint8_t m_std_num_arg[DW_LNS_MAX];
 };
 
+struct SymbolsInfo
+{
+    int lineNumber, ilOffset, nativeOffset, fileIndex;
+    char fileName[2*MAX_PATH_FNAME];
+};
+
 
 class NotifyGdb
 {
@@ -492,14 +498,16 @@ private:
     static bool BuildDebugAbbrev(MemBuf& buf);    
     static bool BuildDebugInfo(MemBuf& buf);
     static bool BuildDebugPub(MemBuf& buf, const char* name, uint32_t size, uint32_t dieOffset);
-    static bool BuildLineTable(MemBuf& buf, PCODE startAddr);
-    static void BuildFileTable(MemBuf& buf);
-    static void BuildLineProg(MemBuf& buf, PCODE startAddr);
+    static bool BuildLineTable(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines);
+    static void BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines);
+    static void BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines);
     static bool FitIntoSpecialOpcode(int8_t line_shift, uint8_t addr_shift);
     static void IssueSetAddress(char*& ptr, PCODE addr);
     static void IssueEndOfSequence(char*& ptr);
     static void IssueSimpleCommand(char*& ptr, uint8_t command);
+    static void IssueParamCommand(char*& ptr, uint8_t command, uint8_t param);
     static void IssueSpecialCommand(char*& ptr, int8_t line_shift, uint8_t addr_shift);
+    static void SplitPathname(const char* path, const char*& pathName, const char*& fileName);
 };
 
 #endif // #ifndef __GDBJIT_H__

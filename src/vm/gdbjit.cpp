@@ -83,12 +83,6 @@ GetMethodNativeMap(MethodDesc* methodDesc,
     return S_OK;
 }
 
-struct SymbolsInfo
-{
-    int lineNumber, ilOffset, nativeOffset;
-    char16_t fileName[MAX_PATH_FNAME];
-};
-
 HRESULT
 GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned int &symInfoLen)
 {
@@ -131,7 +125,10 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned i
 
                 s.nativeOffset = map[j].nativeStartOffset;
                 s.ilOffset = map[j].ilOffset;
-                wcscpy(s.fileName, sp.fileName);
+                s.fileIndex = 0;
+                //wcscpy(s.fileName, sp.fileName);
+                int len = WideCharToMultiByte(CP_UTF8, 0, sp.fileName, -1, s.fileName, sizeof(s.fileName), NULL, NULL);
+                s.fileName[len] = 0;
                 s.lineNumber = sp.lineNumber;
             }
         }
@@ -176,16 +173,6 @@ struct jit_descriptor __jit_debug_descriptor = { 1, 0, 0, 0 };
 
 // END of GDB JIT interface
 
-struct my_line_info {
-    const char* filepath;
-    int line, ilOsset, offset;
-} lines[] = {
-    { "hello3.cs", 8, 0, 55},
-    { "hello3.cs", 9, 1, 56},
-    { "hello3.cs", 10, 7, 73},
-    { "hello3.cs", 11, 13, 90},
-    { "hello3.cs", 12, 31, 130}
-};
 
 const char* SectionNames[] = {
     "", ".text", ".shstrtab", ".debug_str", ".debug_abbrev", ".debug_info",
@@ -210,7 +197,7 @@ struct SectionHeader {
 };
 
 const char* DebugStrings[] = {
-    "CoreCLR", "", "", "", "int"
+    "CoreCLR", "" /* module name */, "" /* module path */, "" /* method name */, "int"
 };
 
 const int DebugStringCount = sizeof(DebugStrings) / sizeof(DebugStrings[0]);
@@ -277,6 +264,17 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     TADDR codeSize = codeInfo.GetCodeManager()->GetFunctionSize(codeInfo.GetGCInfo());
     printf("Code size: %d\n", codeSize);
 
+    const Module* mod = MethodDescPtr->GetMethodTable()->GetModule();
+    SString modName = mod->GetFile()->GetPath();
+    StackScratchBuffer scratch;
+    const char* szModName = modName.GetUTF8(scratch);
+    printf("Module name: %s\n", szModName);
+    const char *szModulePath, *szModuleFile;
+    
+    SplitPathname(szModName, szModulePath, szModuleFile);
+    printf("Module path: %s, filename: %s\n", szModulePath, szModuleFile);
+    
+    
     HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &symInfo, symInfoLen);
     if (symInfoLen == 0)
     {
@@ -285,9 +283,8 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     }
     for (unsigned int i = 0; i < symInfoLen; i++)
     {
-        printf("Native offset: %d  Source: %S Line: %d\n", symInfo[i].nativeOffset, symInfo[i].fileName, symInfo[i].lineNumber);
+        printf("Native offset: %d  Source: %s Line: %d\n", symInfo[i].nativeOffset, symInfo[i].fileName, symInfo[i].lineNumber);
     }
-    delete[] symInfo;
 
 
     
@@ -296,10 +293,11 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     if (!BuildDebugAbbrev(dbgAbbrev))
         return;
     
-    if (!BuildLineTable(dbgLine, pCode))
+    if (!BuildLineTable(dbgLine, pCode, symInfo, symInfoLen))
         return;
     
-    DebugStrings[1] = DebugStrings[3] = methodName;
+    DebugStrings[1] = szModuleFile;
+    DebugStrings[3] = methodName;
     
     if (!BuildDebugStrings(dbgStr))
         return;
@@ -364,11 +362,10 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     header->e_shnum = SectionNamesCount - 1;
     header->e_shstrndx = 2;
 
-    //printf("Elf header @%p:%d\n", elfHeader.MemPtr, elfHeader.MemSize);
     
     elfFile.MemSize = elfHeader.MemSize + sectStr.MemSize + dbgStr.MemSize + dbgAbbrev.MemSize
                         + dbgInfo.MemSize + dbgPubname.MemSize + dbgPubType.MemSize + dbgLine.MemSize + sectHeaders.MemSize;
-    elfFile.MemPtr =  /*(char*)CoTaskMemAlloc(elfFile.MemSize); //*/new char[elfFile.MemSize];
+    elfFile.MemPtr =  new char[elfFile.MemSize];
     
     printf("Elf file @%p:%d\n", elfFile.MemPtr, elfFile.MemSize);
     
@@ -391,6 +388,7 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     offset +=  dbgLine.MemSize;
     memcpy(elfFile.MemPtr + offset, sectHeaders.MemPtr, sectHeaders.MemSize);
     
+    delete[] symInfo;
     delete[] elfHeader.MemPtr;
     delete[] sectStr.MemPtr;
     delete[] dbgStr.MemPtr;
@@ -416,12 +414,12 @@ void NotifyGdb::MethodDropped(MethodDesc* MethodDescPtr)
     printf("NotifyGdb::MethodDropped %p\n", MethodDescPtr);
 }
 
-bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr)
+bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines)
 {
     MemBuf fileTable, lineProg;
     
-    BuildFileTable(fileTable);
-    BuildLineProg(lineProg, startAddr);
+    BuildFileTable(fileTable, lines, nlines);
+    BuildLineProg(lineProg, startAddr, lines, nlines);
     
     buf.MemSize = sizeof(DwarfLineNumHeader) + 1 + fileTable.MemSize + lineProg.MemSize;
     buf.MemPtr = new char[buf.MemSize];
@@ -441,17 +439,58 @@ bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr)
     return true;
 }
 
-void NotifyGdb::BuildFileTable(MemBuf& buf)
+void NotifyGdb::BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines)
 {
-    buf.MemSize = strlen(lines[0].filepath) + 1 + 3 + 1;
+    const char** files = nullptr;
+    unsigned nfiles = 0;
+    
+    files = new const char*[nlines];
+    for (unsigned i = 0; i < nlines; ++i)
+    {
+        const char *filePath, *fileName;
+        SplitPathname(lines[i].fileName, filePath, fileName);
+        
+        lines[i].fileIndex = nfiles;
+        
+        bool found = false;
+        for (int j = 0; j < nfiles; ++j)
+        {
+            if (strcmp(fileName, files[j]) == 0)
+            {
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found)
+        {
+            files[nfiles++] = fileName;
+        }
+    }
+    
+    unsigned totalSize = 0;
+    
+    for (unsigned i = 0; i < nfiles; ++i)
+    {
+        totalSize += strlen(files[i]) + 1 + 3;
+    }
+    totalSize += 1;
+    
+    buf.MemSize = totalSize;
     buf.MemPtr = new char[buf.MemSize];
     
-    strcpy(buf.MemPtr, lines[0].filepath);
-    char* ptr = buf.MemPtr + strlen(lines[0].filepath) + 1;
-    *ptr++ = 0;
-    *ptr++ = 0;
-    *ptr++ = 0;
+    char *ptr = buf.MemPtr;
+    for (unsigned i = 0; i < nfiles; ++i)
+    {
+        strcpy(ptr, files[i]);
+        ptr += strlen(files[i]) + 1;
+        *ptr++ = 0;
+        *ptr++ = 0;
+        *ptr++ = 0;
+    }
     *ptr = 0;
+
+    delete[] files;
 }
 
 void NotifyGdb::IssueSetAddress(char*& ptr, PCODE addr)
@@ -475,6 +514,12 @@ void NotifyGdb::IssueSimpleCommand(char*& ptr, uint8_t command)
     *ptr++ = command;
 }
 
+void NotifyGdb::IssueParamCommand(char*& ptr, uint8_t command, uint8_t param)
+{
+    *ptr++ = command;
+    *ptr++ = param;
+}
+
 void NotifyGdb::IssueSpecialCommand(char*& ptr, int8_t line_shift, uint8_t addr_shift)
 {
     *ptr++ = (line_shift - DWARF_LINE_BASE) + addr_shift * DWARF_LINE_RANGE + DWARF_OPCODE_BASE;
@@ -487,33 +532,34 @@ bool NotifyGdb::FitIntoSpecialOpcode(int8_t line_shift, uint8_t addr_shift)
     return opcode < 255;
 }
 
-void NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr)
+void NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines)
 {
-    unsigned numLines = sizeof(lines) / sizeof(lines[0]);
-    buf.MemSize = numLines * ( 4 + ADDRESS_SIZE) + 4;
+    buf.MemSize = nlines * ( 4 + ADDRESS_SIZE) + 4;
     buf.MemPtr = new char[buf.MemSize];
     char* ptr = buf.MemPtr;
     
     IssueSetAddress(ptr, startAddr);
+    IssueSimpleCommand(ptr, DW_LNS_set_prologue_end);
     
     int prevLine = 1, prevAddr = 0;
     
-    for (int i = 0; i < numLines; ++i)
+    for (int i = 0; i < nlines; ++i)
     {
-       if (FitIntoSpecialOpcode(lines[i].line - prevLine, lines[i].offset - prevAddr))
-           IssueSpecialCommand(ptr, lines[i].line - prevLine, lines[i].offset - prevAddr);
+       if (lines[i].lineNumber - prevLine > (DWARF_LINE_BASE + DWARF_LINE_RANGE - 1))
+       {
+           IssueParamCommand(ptr, DW_LNS_advance_line, lines[i].lineNumber - prevLine);
+           prevLine = lines[i].lineNumber;
+       }
+       if (FitIntoSpecialOpcode(lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr))
+           IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr);
        else
        {
-           IssueSetAddress(ptr, startAddr + lines[i].offset);
-           IssueSpecialCommand(ptr, lines[i].line - prevLine, 0);
-       }
-       if (i == 0)
-       {
-            IssueSimpleCommand(ptr, DW_LNS_set_prologue_end);
+           IssueSetAddress(ptr, startAddr + lines[i].nativeOffset);
+           IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, 0);
        }
            
-       prevLine = lines[i].line;
-       prevAddr = lines[i].offset;
+       prevLine = lines[i].lineNumber;
+       prevAddr = lines[i].nativeOffset;
     }
     
     IssueEndOfSequence(ptr); 
@@ -660,6 +706,23 @@ bool NotifyGdb::BuildELFHeader(MemBuf& buf)
     
     return true;
         
+}
+
+void NotifyGdb::SplitPathname(const char* path, const char*& pathName, const char*& fileName)
+{
+    char* pSlash = strrchr(path, '/');
+    
+    if(pSlash != nullptr)
+    {
+        *pSlash = 0;
+        fileName = ++pSlash;
+        pathName = path;
+    }
+    else 
+    {
+        fileName = path;
+        pathName = nullptr;
+    }
 }
 
 Elf32_Ehdr::Elf32_Ehdr()
