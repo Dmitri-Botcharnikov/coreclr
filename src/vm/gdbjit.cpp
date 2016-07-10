@@ -90,6 +90,9 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned i
 
     ULONG32 numMap;
 
+    if (!getInfoForMethodDelegate)
+        return E_FAIL;
+    
     if (GetMethodNativeMap(MethodDescPtr, &numMap, &map) != S_OK)
         return E_FAIL;
 
@@ -276,7 +279,7 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     
     
     HRESULT hr = GetDebugInfoFromPDB(MethodDescPtr, &symInfo, symInfoLen);
-    if (symInfoLen == 0)
+    if (FAILED(hr) || symInfoLen == 0)
     {
         printf("Can't get debug info from portable PDB.\n");
         return;
