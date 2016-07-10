@@ -30,7 +30,9 @@
 // If set to 1, server GC is enabled on startup. If 0, server GC is
 // disabled. Server GC is off by default.
 static const char* serverGcVar = "CORECLR_SERVER_GC";
+//#ifdef FEATURE_GDBJIT
 GetInfoForMethodDelegate getInfoForMethodDelegate = NULL;
+//#endif // FEATURE_GDBJIT
 #if defined(__linux__)
 #define symlinkEntrypointExecutable "/proc/self/exe"
 #elif !defined(__APPLE__)
@@ -380,6 +382,7 @@ int ExecuteManagedAssembly(
             }
             else 
             {
+#ifdef FEATURE_GDBJIT                
                 coreclr_create_delegate_ptr CreateDelegate =
                 (coreclr_create_delegate_ptr)dlsym(coreclrLib,
                                            "coreclr_create_delegate");
@@ -396,6 +399,7 @@ int ExecuteManagedAssembly(
                     fprintf(stderr, "coreclr_create_delegate failed - status: 0x%08x\n", st);
                     exitCode = -1;
                 }
+#endif // FEATURE_GDBJIT                
                 st = executeAssembly(
                         hostHandle,
                         domainId,
