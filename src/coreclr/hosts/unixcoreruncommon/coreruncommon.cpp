@@ -380,6 +380,7 @@ int ExecuteManagedAssembly(
             }
             else 
             {
+#ifdef FEATURE_GDBJIT                
                 coreclr_create_delegate_ptr CreateDelegate =
                 (coreclr_create_delegate_ptr)dlsym(coreclrLib,
                                            "coreclr_create_delegate");
@@ -396,6 +397,7 @@ int ExecuteManagedAssembly(
                     fprintf(stderr, "coreclr_create_delegate failed - status: 0x%08x\n", st);
                     exitCode = -1;
                 }
+#endif // FEATURE_GDBJIT                
                 st = executeAssembly(
                         hostHandle,
                         domainId,
