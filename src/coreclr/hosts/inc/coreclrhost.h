@@ -47,7 +47,6 @@ CORECLR_HOSTING_API(coreclr_execute_assembly,
 
 #undef CORECLR_HOSTING_API
 
-//#ifdef FEATURE_GDBJIT
 struct SequencePointInfo
 {
     int lineNumber, ilOffset;
@@ -62,7 +61,6 @@ struct MethodDebugInfo
 
 typedef int (*GetInfoForMethodDelegate)(const char*, unsigned int, MethodDebugInfo& methodDebugInfo);
 extern GetInfoForMethodDelegate getInfoForMethodDelegate;
-//#endif // FEATURE_GDBJIT
 
 #endif // __CORECLR_HOST_H__
 
