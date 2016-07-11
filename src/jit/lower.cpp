@@ -151,6 +151,21 @@ genTreeOps getHiOper(genTreeOps oper)
         return GT_NONE;
     }
 }
+
+genTreeOps getLoOper(genTreeOps oper)
+{
+    switch(oper)
+    {
+    case GT_ADD: return GT_ADD_LO;  break;
+    case GT_SUB: return GT_SUB_LO;  break;
+    case GT_OR:  return GT_OR;      break;
+    case GT_AND: return GT_AND;     break;
+    case GT_XOR: return GT_XOR;     break;
+    default:
+        assert(!"getLoOper called for invalid oper");
+        return GT_NONE;
+    }
+}
 #endif // !defined(_TARGET_64BIT_)
 
 //------------------------------------------------------------------------
@@ -332,7 +347,7 @@ void Lowering::DecomposeNode(GenTreePtr* pTree, Compiler::fgWalkData* data)
             // this should be moved to a common function
             if (isEmbeddedStmt)
             {
-                // Find a parent statment containing storeIndHigh.
+                // Find a parent statement containing storeIndHigh.
                 GenTree* parentStmt = currStmt;
                 while ((parentStmt != nullptr) && (!parentStmt->AsStmt()->gtStmtIsTopLevel()))
                 {
@@ -411,16 +426,16 @@ void Lowering::DecomposeNode(GenTreePtr* pTree, Compiler::fgWalkData* data)
                 if (parent->gtOper == GT_STORE_LCL_VAR)
                 {
                     // If parent is already a STORE_LCL_VAR, we can skip it if
-                    // it is already marked as lvIsMultiRegArgOrRet
+                    // it is already marked as lvIsMultiRegRet
                     unsigned varNum = parent->AsLclVarCommon()->gtLclNum;
-                    if (comp->lvaTable[varNum].lvIsMultiRegArgOrRet)
+                    if (comp->lvaTable[varNum].lvIsMultiRegRet)
                     {
                         break;
                     }
                     else if (!comp->lvaTable[varNum].lvPromoted)
                     {
-                        // If var wasn't promoted, we can just set lvIsMultiRegArgOrRet
-                        comp->lvaTable[varNum].lvIsMultiRegArgOrRet = true;
+                        // If var wasn't promoted, we can just set lvIsMultiRegRet
+                        comp->lvaTable[varNum].lvIsMultiRegRet = true;
                         break;
                     }
                 }
@@ -436,7 +451,7 @@ void Lowering::DecomposeNode(GenTreePtr* pTree, Compiler::fgWalkData* data)
                 assert(stLclVar->OperIsLocalStore());
 
                 unsigned varNum = stLclVar->AsLclVarCommon()->gtLclNum;
-                comp->lvaTable[varNum].lvIsMultiRegArgOrRet = true;
+                comp->lvaTable[varNum].lvIsMultiRegRet = true;
                 comp->fgFixupIfCallArg(data->parentStack, tree, *treePtr);
 
                 // Decompose new node
@@ -525,6 +540,7 @@ void Lowering::DecomposeNode(GenTreePtr* pTree, Compiler::fgWalkData* data)
             // We will reuse "tree" for the loResult, which will now be of TYP_INT, and its operands
             // will be the lo halves of op1 from above.
             loResult = tree;
+            loResult->SetOper(getLoOper(loResult->OperGet()));
             loResult->gtType = TYP_INT;
             loResult->gtOp.gtOp1 = loOp1;
             loResult->gtOp.gtOp2 = loOp2;
@@ -834,7 +850,7 @@ void Lowering::DecomposeStoreInd(GenTree* tree)
 
     if (isEmbeddedStmt)
     {
-        // Find a parent statment containing storeIndHigh. 
+        // Find a parent statement containing storeIndHigh. 
         GenTree* parentStmt = currStmt;
         while ((parentStmt != nullptr) && (!parentStmt->AsStmt()->gtStmtIsTopLevel()))
         {
@@ -4030,6 +4046,7 @@ void Lowering::LowerUnsignedDivOrMod(GenTree* tree)
 //
 // Arguments:
 //    pTree:   pointer to the parent node's link to the node we care about
+//    data:    fgWalkData which is used to get info about parents and fixup call args
 
 void Lowering::LowerSignedDivOrMod(GenTreePtr* ppTree, Compiler::fgWalkData* data)
 {
@@ -4784,7 +4801,7 @@ bool Lowering::NodesAreEquivalentLeaves(GenTreePtr tree1, GenTreePtr tree2)
 }
 
 /**
- * Takes care of replaing a GenTree node's child with a new tree.
+ * Takes care of replacing a GenTree node's child with a new tree.
  *
  *  Assumptions:
  *  a) replacementNode has been unlinked (orphaned) and the expression it represents

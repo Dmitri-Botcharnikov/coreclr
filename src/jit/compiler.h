@@ -280,7 +280,9 @@ public:
     unsigned char       lvOverlappingFields :1;  // True when we have a struct with possibly overlapping fields
     unsigned char       lvContainsHoles     :1;  // True when we have a promoted struct that contains holes
     unsigned char       lvCustomLayout      :1;  // True when this struct has "CustomLayout"
-    unsigned char       lvIsMultiRegArgOrRet:1;  // Is this a struct that would be passed or returned in multiple registers?
+
+    unsigned char       lvIsMultiRegArg     :1;  // true if this is a multireg LclVar struct used in an argument context
+    unsigned char       lvIsMultiRegRet     :1;  // true if this is a multireg LclVar struct assigned from a multireg call 
 
 #ifdef FEATURE_HFA
     unsigned char       _lvIsHfa            :1;  // Is this a struct variable who's class handle is an HFA type
@@ -408,6 +410,14 @@ public:
             return lvExactSize / sizeof(double);
         }
 #endif //  _TARGET_ARM64_
+    }
+
+    // lvIsMultiRegArgOrRet()
+    //     returns true if this is a multireg LclVar struct used in an argument context
+    //               or if this is a multireg LclVar struct assigned from a multireg call 
+    bool lvIsMultiRegArgOrRet()
+    {
+        return lvIsMultiRegArg || lvIsMultiRegRet;
     }
 
 private:
@@ -4255,12 +4265,14 @@ public:
     void                fgDebugCheckFlags           (GenTreePtr   tree);
 #endif
 
+#ifdef LEGACY_BACKEND
     static void         fgOrderBlockOps   (GenTreePtr   tree,
                                            regMaskTP    reg0,
                                            regMaskTP    reg1,
                                            regMaskTP    reg2,
                                            GenTreePtr * opsPtr,   // OUT
                                            regMaskTP  * regsPtr); // OUT
+#endif // LEGACY_BACKEND
 
     static GenTreeStmt* fgFindTopLevelStmtBackwards(GenTreeStmt* stmt);
     static GenTreePtr   fgGetFirstNode      (GenTreePtr tree);
@@ -6783,7 +6795,7 @@ public :
 #endif // _TARGET_ARM_
 
     // If "tree" is a indirection (GT_IND, or GT_OBJ) whose arg is an ADDR, whose arg is a LCL_VAR, return that LCL_VAR node, else NULL.
-    GenTreePtr          fgIsIndirOfAddrOfLocal(GenTreePtr tree);
+    static GenTreePtr   fgIsIndirOfAddrOfLocal(GenTreePtr tree);
 
     // This is indexed by GT_OBJ nodes that are address of promoted struct variables, which
     // have been annotated with the GTF_VAR_DEATH flag.  If such a node is *not* mapped in this

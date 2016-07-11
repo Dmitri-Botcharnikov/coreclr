@@ -538,6 +538,22 @@ private:
     LsraSpill                   getLsraSpill()                  { return (LsraSpill) (lsraStressMask & LSRA_SPILL_MASK); }
     bool                        spillAlways()                   { return getLsraSpill() == LSRA_SPILL_ALWAYS; }
 
+    // This controls whether RefPositions that lower/codegen indicated as reg optional be
+    // allocated a reg at all.
+    enum LsraRegOptionalControl     { LSRA_REG_OPTIONAL_DEFAULT          = 0,
+                                      LSRA_REG_OPTIONAL_NO_ALLOC         = 0x1000,
+                                      LSRA_REG_OPTIONAL_MASK             = 0x1000 };
+
+    LsraRegOptionalControl      getLsraRegOptionalControl()            
+    { 
+        return (LsraRegOptionalControl) (lsraStressMask & LSRA_REG_OPTIONAL_MASK); 
+    }
+
+    bool                        regOptionalNoAlloc()     
+    { 
+        return getLsraRegOptionalControl() == LSRA_REG_OPTIONAL_NO_ALLOC;
+    }
+
     // Dump support
     void            lsraDumpIntervals(const char* msg);
     void            dumpRefPositions(const char *msg);
@@ -743,6 +759,8 @@ private:
 
     void associateRefPosWithRegister(RefPosition *rp);
 
+    unsigned getWeight(RefPosition* refPos);
+
     /*****************************************************************************
      * Register management
      ****************************************************************************/
@@ -750,7 +768,7 @@ private:
     regNumber tryAllocateFreeReg(Interval *current, RefPosition *refPosition);
     RegRecord* findBestPhysicalReg(RegisterType regType, LsraLocation endLocation,
                                   regMaskTP candidates, regMaskTP preferences);
-    regNumber allocateBusyReg(Interval *current, RefPosition *refPosition);
+    regNumber allocateBusyReg(Interval* current, RefPosition* refPosition, bool allocateIfProfitable);
     regNumber assignCopyReg(RefPosition * refPosition);
 
     void checkAndAssignInterval(RegRecord * regRec, Interval * interval);
@@ -1326,17 +1344,50 @@ public:
     LsraLocation    nodeLocation;
     regMaskTP       registerAssignment;
 
-    regNumber       assignedReg() { return genRegNumFromMask(registerAssignment); }
+    regNumber       assignedReg() { 
+        if (registerAssignment == RBM_NONE)
+        {
+            return REG_NA;
+        }
+
+        return genRegNumFromMask(registerAssignment); 
+    }
 
     RefType         refType;
 
+    // Returns true if it is a reference on a gentree node.
+    bool            IsActualRef()
+    {
+        return (refType == RefTypeDef || 
+                refType == RefTypeUse);
+    }
+
     bool            RequiresRegister()
     {
-        return (refType == RefTypeDef || refType == RefTypeUse
+        return (IsActualRef()
 #if FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-               || refType == RefTypeUpperVectorSaveDef || refType == RefTypeUpperVectorSaveUse
+                || refType == RefTypeUpperVectorSaveDef
+                || refType == RefTypeUpperVectorSaveUse
 #endif // FEATURE_PARTIAL_SIMD_CALLEE_SAVE
-               );
+               ) && !AllocateIfProfitable();
+    }
+
+    // Returns true whether this ref position is to be allocated
+    // a reg only if it is profitable.  Currently these are the
+    // ref positions that lower/codegen has indicated as reg
+    // optional and is considered a contained memory operand if
+    // no reg is allocated.
+    bool           AllocateIfProfitable()
+    {
+        // TODO-CQ: Right now if a ref position is marked as
+        // copyreg or movereg, then it is not treated as
+        // 'allocate if profitable'. This is an implementation
+        // limitation that needs to be addressed.
+        return (refType == RefTypeUse) &&
+                !copyReg &&
+                !moveReg &&
+                (treeNode != nullptr) &&
+                treeNode->IsRegOptional();
     }
 
     // Used by RefTypeDef/Use positions of a multi-reg call node.
@@ -1353,6 +1404,7 @@ public:
     }
 
     unsigned        getMultiRegIdx() { return multiRegIdx;  }
+
 
     // Last Use - this may be true for multiple RefPositions in the same Interval
     bool            lastUse      : 1;

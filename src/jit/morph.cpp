@@ -2083,9 +2083,9 @@ GenTreePtr    Compiler::fgMakeTmpArgNode(unsigned tmpVarNum
         arg = gtNewOperNode(GT_ADDR, TYP_BYREF, arg);
         addrNode = arg;
 
-        // Get a new Obj node temp to use it as a call argument
+        // Get a new Obj node temp to use it as a call argument.
+        // gtNewObjNode will set the GTF_EXCEPT flag if this is not a local stack object.
         arg = gtNewObjNode(lvaGetStruct(tmpVarNum), arg);
-        arg->gtFlags |= GTF_EXCEPT;
 
 #endif  // not (_TARGET_AMD64_ or _TARGET_ARM64_)
 
@@ -3193,7 +3193,7 @@ GenTreeCall* Compiler::fgMorphArgs(GenTreeCall* callNode)
                         }
                     }
                     // Note that there are some additional rules for multireg structs.
-                    // (i.e they cannot be split betwen registers and the stack)
+                    // (i.e they cannot be split between registers and the stack)
                 }
                 else
                 {
@@ -3285,15 +3285,15 @@ GenTreeCall* Compiler::fgMorphArgs(GenTreeCall* callNode)
                     bool     passStructByRef = false;
 #endif // !FEATURE_UNIX_AMD64_STRUCT_PASSING
 
-                    // The following if-then-else needs to be carefully refactored
-                    // Basically the else portion wants to turn a struct load (a GT_OBJ)'
+                    // The following if-then-else needs to be carefully refactored.
+                    // Basically the else portion wants to turn a struct load (a GT_OBJ)
                     // into a GT_IND of the appropriate size. 
-                    // It can do this with structs sizes that are 1,2,4, or 8 bytes
+                    // It can do this with structs sizes that are 1, 2, 4, or 8 bytes.
                     // It can't do this when FEATURE_UNIX_AMD64_STRUCT_PASSING is defined  (Why?)
-                    // TODO-Cleanup: Remove the #ifndef FEATURE_UNIX_AMD64_STRUCT_PASSING below
+                    // TODO-Cleanup: Remove the #ifndef FEATURE_UNIX_AMD64_STRUCT_PASSING below.
                     // It also can't do this if we have a HFA arg, 
-                    // unless we have a 1-elem HFA in which case we want to do the optization
-                    // 
+                    // unless we have a 1-elem HFA in which case we want to do the optimization.
+
 #ifndef _TARGET_X86_
 #ifndef FEATURE_UNIX_AMD64_STRUCT_PASSING
                     // Check for struct argument with size 1, 2, 4 or 8 bytes
@@ -3474,7 +3474,8 @@ GenTreeCall* Compiler::fgMorphArgs(GenTreeCall* callNode)
                             // we must copyblk to a temp before doing the obj to avoid
                             // the obj reading memory past the end of the valuetype
 #if defined(_TARGET_X86_) && !defined(LEGACY_BACKEND)
-                        // TODO-X86-CQ: [1091733] Revisit for small structs, we should use push instruction
+                            // TODO-X86-CQ: [1091733] We should only be copying when roundupSize > originalSize.
+                            // See also the TODO-CQ just before the call to fgMakeOutgoingStructArgCopy().
                             copyBlkClass = objClass;
                             size = roundupSize / TARGET_POINTER_SIZE;   // Normalize size to number of pointer sized items
 #else // !defined(_TARGET_X86_) || defined(LEGACY_BACKEND)
@@ -3506,10 +3507,14 @@ GenTreeCall* Compiler::fgMorphArgs(GenTreeCall* callNode)
                         }
                     }
                 }
+
+#ifndef _TARGET_X86_
+                // TODO-Arm: Does this apply for _TARGET_ARM_, where structs passed by value can be split between registers and stack? 
                 if (size > 1)
                 {
                     hasMultiregStructArgs = true;
                 }
+#endif // !_TARGET_X86_
             }
 
             // The 'size' value has now must have been set. (the original value of zero is an invalid value)
@@ -3830,6 +3835,13 @@ GenTreeCall* Compiler::fgMorphArgs(GenTreeCall* callNode)
         {
             noway_assert(!lateArgsComputed);
             fgMakeOutgoingStructArgCopy(call, args, argIndex, copyBlkClass FEATURE_UNIX_AMD64_STRUCT_PASSING_ONLY_ARG(&structDesc));
+            // This can cause a GTF_EXCEPT flag to be set.
+            // TODO-CQ: Fix the cases where this happens. We shouldn't be adding any new flags.
+            // This currently occurs in the case where we are re-morphing the args on x86/RyuJIT, and
+            // there are no register arguments. Then lateArgsComputed is never true, so we keep re-copying
+            // any struct arguments.
+            // i.e. assert(((call->gtFlags & GTF_EXCEPT) != 0) || ((args->Current()->gtFlags & GTF_EXCEPT) == 0)
+            flagsSummary |= (args->Current()->gtFlags & GTF_EXCEPT);
         }
 
 #ifndef LEGACY_BACKEND
@@ -4172,8 +4184,6 @@ void Compiler::fgMorphSystemVStructArgs(GenTreeCall* call, bool hasStructArgumen
 
                         // Create an Obj of the temp to use it as a call argument.
                         arg = new (this, GT_OBJ) GenTreeObj(originalType, arg, lvaGetStruct(lclCommon->gtLclNum));
-                        arg->gtFlags |= GTF_EXCEPT;
-                        flagsSummary |= GTF_EXCEPT;
                     }
                 }
             }
@@ -4250,14 +4260,14 @@ void Compiler::fgMorphMultiregStructArgs(GenTreeCall* call)
     NYI_ARM("fgMorphMultiregStructArgs");
 #endif
 #ifdef _TARGET_X86_
-    assert("Logic error: no MultiregStructArgs for X86");
+    assert(!"Logic error: no MultiregStructArgs for X86");
 #endif
 #ifdef _TARGET_AMD64_
 #if defined(UNIX_AMD64_ABI)
     NYI_AMD64("fgMorphMultiregStructArgs (UNIX ABI)");
-#else
-#endif
-    assert("Logic error: no MultiregStructArgs for Windows X64 ABI");
+#else // !UNIX_AMD64_ABI
+    assert(!"Logic error: no MultiregStructArgs for Windows X64 ABI");
+#endif // !UNIX_AMD64_ABI
 #endif
 
     for (args = call->gtCallArgs; args != nullptr; args = args->gtOp.gtOp2)
@@ -4470,7 +4480,7 @@ GenTreePtr    Compiler::fgMorphMultiregStructArg(GenTreePtr arg, fgArgTabEntryPt
         //
         assert((varDsc->lvSize() == 2*TARGET_POINTER_SIZE) || varDsc->lvIsHfa());
 
-        varDsc->lvIsMultiRegArgOrRet = true;
+        varDsc->lvIsMultiRegArg = true;
 
 #ifdef DEBUG
         if (verbose)
@@ -8005,17 +8015,19 @@ ONE_SIMPLE_ASG:
             }
         }
 
-        /* Indirect the dest node */
+        // Indirect the dest node.
 
         dest = gtNewOperNode(GT_IND, type, dest);
 
-        /* As long as we don't have more information about the destination we
-           have to assume it could live anywhere (not just in the GC heap). Mark
-           the GT_IND node so that we use the correct write barrier helper in case
-           the field is a GC ref.
-        */
+        // If we have no information about the destination, we have to assume it could
+        // live anywhere (not just in the GC heap).
+        // Mark the GT_IND node so that we use the correct write barrier helper in case
+        // the field is a GC ref.
 
-        dest->gtFlags |= (GTF_EXCEPT | GTF_GLOB_REF | GTF_IND_TGTANYWHERE);
+        if (!fgIsIndirOfAddrOfLocal(dest))
+        {
+            dest->gtFlags |= (GTF_EXCEPT | GTF_GLOB_REF | GTF_IND_TGTANYWHERE);
+        }
 
 _DoneDest:;
 
@@ -8063,10 +8075,19 @@ _DoneDest:;
                 }
             }
 
-            /* Indirect the src node */
+            // Indirect the src node.
 
             src  = gtNewOperNode(GT_IND, type, src);
-            src->gtFlags     |= (GTF_EXCEPT | GTF_GLOB_REF | GTF_IND_TGTANYWHERE);
+
+            // If we have no information about the src, we have to assume it could
+            // live anywhere (not just in the GC heap).
+            // Mark the GT_IND node so that we use the correct write barrier helper in case
+            // the field is a GC ref.
+
+            if (!fgIsIndirOfAddrOfLocal(src))
+            {
+                src->gtFlags |= (GTF_EXCEPT | GTF_GLOB_REF | GTF_IND_TGTANYWHERE);
+            }
 
 _DoneSrc:;
 
@@ -8075,29 +8096,9 @@ _DoneSrc:;
         }
         else // (oper == GT_INITBLK)
         {
-            if (size > 1)
-            {
-                size_t cns = src->gtIntCon.gtIconVal;
-                cns  = cns & 0xFF;
-                cns |= cns << 8;
-                if (size >= 4)
-                {
-                    cns |= cns << 16;
-#ifdef _TARGET_64BIT_
-                    if (size == 8)
-                    {
-                        cns |= cns << 32;
-                    }
-#endif // _TARGET_64BIT_
-
-                    src->gtType = type;   // Make the type used in the GT_IND node match for TYP_REF
-
-                    // if we are using an GT_INITBLK on a GC type the value being assigned has to be zero (null)
-                    assert(!varTypeIsGC(type) || (cns == 0));
-                }
-
-                src->gtIntCon.gtIconVal = cns;
-            }
+            // This will mutate the integer constant, in place, to be the correct
+            // value for the type were are using in the assignment.
+            src->AsIntCon()->FixupInitBlkValue(type);
         }
 
         /* Create the assignment node */
@@ -9260,7 +9261,7 @@ GenTreePtr  Compiler::fgMorphFieldAssignToSIMDIntrinsicSet(GenTreePtr tree)
             simdIntrinsicID = SIMDIntrinsicSetW;
             break;
         default:
-            noway_assert("There is no set intrinsic for index bigger than 3");
+            noway_assert(!"There is no set intrinsic for index bigger than 3");
         }
         
 
@@ -11395,6 +11396,16 @@ CM_ADD_OP:
         noway_assert(varTypeIsFloating(op1->TypeGet()));
 
         fgAddCodeRef(compCurBB, bbThrowIndex(compCurBB), SCK_ARITH_EXCPN, fgPtrArgCntCur);
+        break;
+
+    case GT_OBJ:
+        // If we have GT_OBJ(GT_ADDR(X)) and X has GTF_GLOB_REF, we must set GTF_GLOB_REF on
+        // the GT_OBJ. Note that the GTF_GLOB_REF will have been cleared on ADDR(X) where X
+        // is a local or clsVar, even if it has been address-exposed.
+        if (op1->OperGet() == GT_ADDR)
+        {
+            tree->gtFlags |= (op1->gtGetOp1()->gtFlags & GTF_GLOB_REF);
+        }
         break;
 
     case GT_IND:
@@ -15705,11 +15716,15 @@ void                Compiler::fgPromoteStructs()
             tooManyLocals = true;
         }
 #if !FEATURE_MULTIREG_STRUCT_PROMOTE
-        else if (varDsc->lvIsMultiRegArgOrRet)
+        else if (varDsc->lvIsMultiRegArg)
         {
-            JITDUMP("Skipping V%02u: marked lvIsMultiRegArgOrRet.\n", lclNum);
+            JITDUMP("Skipping V%02u: marked lvIsMultiRegArg.\n", lclNum);
         }
 #endif // !FEATURE_MULTIREG_STRUCT_PROMOTE
+        else if (varDsc->lvIsMultiRegRet)
+        {
+            JITDUMP("Skipping V%02u: marked lvIsMultiRegRet.\n", lclNum);
+        }
         else if (varTypeIsStruct(varDsc))
         {
             lvaCanPromoteStructVar(lclNum, &structPromotionInfo);

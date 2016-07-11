@@ -495,11 +495,16 @@ public:
 
     bool isContainedLclField() const        { return isContained() && isLclField(); }
 
+    bool isContainedLclVar() const          {  return isContained() && (OperGet() == GT_LCL_VAR);  } 
+
     // Indicates whether it is a memory op.
     // Right now it includes Indir and LclField ops.
     bool isMemoryOp() const                 { return isIndir() || isLclField(); }
 
-    bool isContainedMemoryOp() const        { return isContained() && isMemoryOp(); }
+    bool isContainedMemoryOp() const        
+    { 
+        return (isContained() && isMemoryOp()) || isContainedLclVar(); 
+    }
 
     regNumber GetRegNum() const
     {
@@ -635,11 +640,14 @@ public:
     #define GTF_GLOB_EFFECT     (GTF_SIDE_EFFECT|GTF_GLOB_REF)
     #define GTF_ALL_EFFECT      (GTF_GLOB_EFFECT|GTF_ORDER_SIDEEFF)
 
-    // The extra flag GTF_DEAD is used to tell the consumer of these flags
-    // that we are calling in the context of performing a CSE, thus we 
+    // The extra flag GTF_IS_IN_CSE is used to tell the consumer of these flags
+    // that we are calling in the context of performing a CSE, thus we
     // should allow the run-once side effects of running a class constructor.
     //
-    #define GTF_PERSISTENT_SIDE_EFFECTS_IN_CSE (GTF_ASG|GTF_CALL|GTF_DEAD)
+    // The only requirement of this flag is that it not overlap any of the
+    // side-effect flags. The actual bit used is otherwise arbitrary.
+    #define GTF_IS_IN_CSE  GTF_MAKE_CSE
+    #define GTF_PERSISTENT_SIDE_EFFECTS_IN_CSE (GTF_ASG|GTF_CALL|GTF_IS_IN_CSE)
 
     // Can any side-effects be observed externally, say by a caller method?
     // For assignments, only assignments to global memory can be observed
@@ -672,10 +680,6 @@ public:
                                             // Use gtSetFlags() to check this flags
 #endif
     #define GTF_IND_NONFAULTING 0x00000800  // An indir that cannot fault.  GTF_SET_FLAGS is not used on indirs
-
-#if FEATURE_ANYCSE
-    #define GTF_DEAD            0x00001000  // this node won't be used any more
-#endif // FEATURE_ANYCSE
 
     #define GTF_MAKE_CSE        0x00002000  // Hoisted Expression: try hard to make this into CSE  (see optPerformHoistExpr)
     #define GTF_DONT_CSE        0x00004000  // don't bother CSE'ing this expr
@@ -983,15 +987,10 @@ public:
         return (gtOper == GT_LEA);
     }
 
-    bool            OperIsBlkOp() const
-    {
-        return OperIsBlkOp(OperGet());
-    }
-
-    bool            OperIsCopyBlkOp() const
-    {
-        return OperIsCopyBlkOp(OperGet());
-    }
+    bool            OperIsBlkOp() const;
+    bool            OperIsCopyBlkOp() const;
+    bool            OperIsInitBlkOp() const;
+    bool            OperIsDynBlkOp();
 
     bool            OperIsPutArgStk() const
     {
@@ -1469,6 +1468,10 @@ public:
     // yields an address into a local
     GenTreeLclVarCommon* IsLocalAddrExpr();
 
+    // Determine if this is a LclVarCommon node and return some additional info about it in the
+    // two out parameters.
+    bool IsLocalExpr(Compiler* comp, GenTreeLclVarCommon** pLclVarTree, FieldSeqNode** pFldSeq);
+
     // Determine whether this is an assignment tree of the form X = X (op) Y,
     // where Y is an arbitrary tree, and X is a lclVar.
     unsigned             IsLclVarUpdateTree(GenTree** otherTree, genTreeOps *updateOper);
@@ -1620,6 +1623,11 @@ public:
     // cast operations 
     inline var_types            CastFromType();
     inline var_types&           CastToType();
+
+    // Returns true if this gentree node is marked by lowering to indicate
+    // that codegen can still generate code even if it wasn't allocated a 
+    // register.
+    bool IsRegOptional() const;   
 
     // Returns "true" iff "*this" is an assignment (GT_ASG) tree that defines an SSA name (lcl = phi(...));
     bool IsPhiDefn();
@@ -1951,6 +1959,8 @@ struct GenTreeIntCon: public GenTreeIntConCommon
         {
             assert(fields != NULL);
         }
+
+    void FixupInitBlkValue(var_types asgType);
 
 #ifdef _TARGET_64BIT_
     void TruncateOrSignExtend32()
@@ -3270,8 +3280,14 @@ public:
                                 return gtOp1->gtOp.gtOp1;
                               }
 
+    // Return true iff the object being copied contains one or more GC pointers.
+    bool        HasGCPtr();
+
     // True if this BlkOpNode is a volatile memory operation.
     bool IsVolatile() const { return (gtFlags & GTF_BLK_VOLATILE) != 0; }
+
+    // True if this BlkOpNode is a volatile memory operation.
+    bool IsUnaligned() const { return (gtFlags & GTF_BLK_UNALIGNED) != 0; }
 
     // Instruction selection: during codegen time, what code sequence we will be using
     // to encode this operation.
@@ -3313,7 +3329,8 @@ struct GenTreeObj: public GenTreeUnOp
         GenTreeUnOp(GT_OBJ, type, addr),
         gtClass(cls)
         {
-            gtFlags |= GTF_GLOB_REF; // An Obj is always a global reference.
+            // By default, an OBJ is assumed to be a global reference.
+            gtFlags |= GTF_GLOB_REF;
         }
 
 #if DEBUGGABLE_GENTREE
@@ -4101,6 +4118,28 @@ struct GenTreeCopyOrReload : public GenTreeUnOp
 // be defined already.
 //------------------------------------------------------------------------
 
+inline bool            GenTree::OperIsBlkOp() const
+{
+    return (gtOper == GT_INITBLK ||
+            gtOper == GT_COPYBLK ||
+            gtOper == GT_COPYOBJ);
+}
+
+inline bool            GenTree::OperIsDynBlkOp()
+{
+    return (OperIsBlkOp() && !gtGetOp2()->IsCnsIntOrI());
+}
+
+inline bool            GenTree::OperIsCopyBlkOp() const
+{
+    return (gtOper == GT_COPYOBJ || gtOper == GT_COPYBLK);
+}
+
+inline bool GenTree::OperIsInitBlkOp() const
+{
+    return (gtOper == GT_INITBLK);
+}
+
 //------------------------------------------------------------------------
 // IsFPZero: Checks whether this is a floating point constant with value 0.0
 //
@@ -4435,6 +4474,29 @@ inline bool GenTree::IsHelperCall() { return OperGet() == GT_CALL && gtCall.gtCa
 
 inline var_types GenTree::CastFromType() { return this->gtCast.CastOp()->TypeGet(); }
 inline var_types& GenTree::CastToType()  { return this->gtCast.gtCastType; }
+
+//-----------------------------------------------------------------------------------
+// HasGCPtr: determine whether this block op involves GC pointers
+//
+// Arguments:
+//     None
+//
+// Return Value:
+//    Returns true iff the object being copied contains one or more GC pointers.
+//
+// Notes:
+//    Of the block ops only GT_COPYOBJ is allowed to have GC pointers.
+// 
+inline bool
+GenTreeBlkOp::HasGCPtr()
+{
+    if (gtFlags & GTF_BLK_HASGCPTR)
+    {
+        assert((gtOper == GT_COPYOBJ) && (AsCpObj()->gtGcPtrCount != 0));
+        return true;
+    }
+    return false;
+}
 
 
 /*****************************************************************************/

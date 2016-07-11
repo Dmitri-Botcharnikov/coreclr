@@ -32,7 +32,7 @@ if (PYTHON STREQUAL "PYTHON-NOTFOUND")
 endif()
 
 # Ensure other tools are present
-if(WIN32)
+if (WIN32)
     enable_language(ASM_MASM)
 
     # Ensure that MC is present
@@ -41,7 +41,7 @@ if(WIN32)
         message(FATAL_ERROR "MC not found")
     endif()
 
-    if(CLR_CMAKE_HOST_ARCH STREQUAL arm64)
+    if (CLR_CMAKE_HOST_ARCH STREQUAL arm64)
       # CMAKE_CXX_COMPILER will default to the compiler installed with 
       # Visual studio. Overwrite it to the compiler on the path. 
       # TODO, remove when cmake generator supports Arm64 as a target.  
@@ -50,7 +50,8 @@ if(WIN32)
       message("Overwriting the CMAKE_CXX_COMPILER.") 
       message(CMAKE_CXX_COMPILER found:${CMAKE_CXX_COMPILER}) 
     endif()
-else()
+
+else (WIN32)
     enable_language(ASM)
 
     # Ensure that awk is present
@@ -61,21 +62,22 @@ else()
  
     if (CMAKE_SYSTEM_NAME STREQUAL Darwin)
 
-      # Ensure that dsymutil and strip is present
+      # Ensure that dsymutil and strip are present
       find_program(DSYMUTIL dsymutil)
       if (DSYMUTIL STREQUAL "DSYMUTIL-NOTFOUND")
           message(FATAL_ERROR "dsymutil not found")
       endif()
+
       find_program(STRIP strip)
       if (STRIP STREQUAL "STRIP-NOTFOUND")
           message(FATAL_ERROR "strip not found")
       endif()
-    elseif (CMAKE_SYSTEM_NAME STREQUAL Linux)
+
+    else (CMAKE_SYSTEM_NAME STREQUAL Darwin)
+
       # Ensure that objcopy is present
-      if(DEFINED ENV{CROSSCOMPILE})
-        if(CMAKE_SYSTEM_PROCESSOR STREQUAL armv7l)
-          find_program(OBJCOPY ${TOOLCHAIN}-objcopy) 
-        elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
+      if (DEFINED ENV{CROSSCOMPILE})
+        if (CMAKE_SYSTEM_PROCESSOR STREQUAL armv7l OR CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
           find_program(OBJCOPY ${TOOLCHAIN}-objcopy)
         else()
           clr_unknown_arch()
@@ -83,10 +85,12 @@ else()
       else()
         find_program(OBJCOPY objcopy)
       endif()
+
       if (OBJCOPY STREQUAL "OBJCOPY-NOTFOUND")
           message(FATAL_ERROR "objcopy not found")
       endif()
-    endif ()
+
+    endif (CMAKE_SYSTEM_NAME STREQUAL Darwin)
 endif(WIN32)
 
 #----------------------------------------
@@ -537,44 +541,5 @@ if(CLR_CMAKE_BUILD_TESTS)
 
   add_subdirectory(tests)
 endif(CLR_CMAKE_BUILD_TESTS)
-
-#----------------------------------------------------
-# Build the project again for cross target components
-#    - intermediates will be placed at %__IntermediatesDir%\crosscomponents
-#    - final binaries will be placed at %__CMakeBinDir%\<hostArch>
-#----------------------------------------------------
-
-if(CLR_CMAKE_PLATFORM_ARCH_ARM64 AND WIN32)
-  # Cross target component build only enabled for win arm64
-  set(CLR_CROSS_COMPONENTS_BUILD_ENABLED 1)
-endif()
-
-# To avoid recursion when building cross target components
-if(NOT DEFINED CLR_CROSS_COMPONENTS_BUILD AND CLR_CROSS_COMPONENTS_BUILD_ENABLED)
-
-  # Set host arch for cross target components
-  if(CLR_CMAKE_PLATFORM_ARCH_ARM64)
-    set(CLR_CROSS_BUILD_HOST_ARCH x64)
-  elseif(CLR_CMAKE_PLATFORM_ARCH_ARM)
-    set(CLR_CROSS_BUILD_HOST_ARCH x86)
-  endif()
-
-  include(ExternalProject)
-
-  # Add the source root again as external project but with CLR_CROSS_COMPONENTS_BUILD flag set
-  ExternalProject_Add(
-    crosscomponents
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
-    # Arm64 builds currently pollute the env by setting private toolset dirs. Get rid of that.
-    CMAKE_COMMAND "$ENV{__VSToolsRoot}\\..\\..\\VC\\vcvarsall.bat" COMMAND cmake
-    CMAKE_ARGS -DCLR_CROSS_COMPONENTS_BUILD=1
-               -DCMAKE_INSTALL_PREFIX:PATH=$ENV{__CMakeBinDir}/${CLR_CROSS_BUILD_HOST_ARCH}
-               -DCMAKE_USER_MAKE_RULES_OVERRIDE=${CLR_DIR}/src/pal/tools/windows-compiler-override.txt
-               -DCLR_CMAKE_HOST_ARCH=${CLR_CROSS_BUILD_HOST_ARCH}
-               -DCLR_CMAKE_TARGET_ARCH=${CLR_CMAKE_HOST_ARCH}
-    BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/crosscomponents
-    INSTALL_DIR $ENV{__CMakeBinDir}/${CLR_CROSS_BUILD_HOST_ARCH}
-  )
-endif()
 
 include(definitionsconsistencycheck.cmake)

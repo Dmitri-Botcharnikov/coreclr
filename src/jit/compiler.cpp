@@ -6575,6 +6575,7 @@ void JitTimer::PrintCsvHeader()
         // Ex: ngen install mscorlib won't print stats for "ngen" but for "mscorsvw"
         FILE* fp = _wfopen(jitTimeLogCsv, W("w"));
         fprintf(fp, "\"Method Name\",");
+        fprintf(fp, "\"Method Index\",");
         fprintf(fp, "\"IL Bytes\",");
         fprintf(fp, "\"Basic Blocks\",");
         fprintf(fp, "\"Opt Level\",");
@@ -6590,6 +6591,8 @@ void JitTimer::PrintCsvHeader()
     }
 }
 
+extern ICorJitHost* g_jitHost;
+
 void JitTimer::PrintCsvMethodStats(Compiler* comp)
 {
     LPCWSTR jitTimeLogCsv = Compiler::JitTimeLogCsv();
@@ -6601,10 +6604,20 @@ void JitTimer::PrintCsvMethodStats(Compiler* comp)
     // eeGetMethodFullName uses locks, so don't enter crit sec before this call.
     const char* methName = comp->eeGetMethodFullName(comp->info.compMethodHnd);
 
+    // Try and access the SPMI index to report in the data set.
+    //
+    // If the jit is not hosted under SPMI this will return the
+    // default value of zero.
+    //
+    // Query the jit host directly here instead of going via the
+    // config cache, since value will change for each method.
+    int index = g_jitHost->getIntConfigValue(W("SuperPMIMethodContextNumber"), 0);
+
     CritSecHolder csvLock(s_csvLock);
 
     FILE* fp = _wfopen(jitTimeLogCsv, W("a"));
     fprintf(fp, "\"%s\",", methName);
+    fprintf(fp, "%d,", index);
     fprintf(fp, "%u,", comp->info.compILCodeSize);
     fprintf(fp, "%u,", comp->fgBBcount);
     fprintf(fp, "%u,", comp->opts.MinOpts());
@@ -8018,15 +8031,15 @@ int cTreeFlagsIR(Compiler *comp, GenTree *tree)
         case GT_INITBLK:
         case GT_COPYOBJ:
 
-            if (tree->gtFlags & GTF_BLK_HASGCPTR)
+            if (tree->AsBlkOp()->HasGCPtr())
             {
                 chars += printf("[BLK_HASGCPTR]");
             }
-            if (tree->gtFlags & GTF_BLK_VOLATILE)
+            if (tree->AsBlkOp()->IsVolatile())
             {
                 chars += printf("[BLK_VOLATILE]");
             }
-            if (tree->gtFlags & GTF_BLK_UNALIGNED)
+            if (tree->AsBlkOp()->IsUnaligned())
             {
                 chars += printf("[BLK_UNALIGNED]");
             }
@@ -8267,12 +8280,6 @@ int cTreeFlagsIR(Compiler *comp, GenTree *tree)
                 chars += printf("[IND_NONFAULTING]");
             }
         }
-#if FEATURE_ANYCSE
-        if (tree->gtFlags & GTF_DEAD)
-        {
-            chars += printf("[DEAD]");
-        }
-#endif
         if (tree->gtFlags & GTF_MAKE_CSE)
         {
             chars += printf("[MAKE_CSE]");

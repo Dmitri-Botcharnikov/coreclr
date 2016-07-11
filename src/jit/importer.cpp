@@ -1074,7 +1074,7 @@ GenTreePtr Compiler::impAssignStruct(GenTreePtr     dest,
 
 /*****************************************************************************/
 
-GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
+GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      destAddr,
                                         GenTreePtr      src,
                                         CORINFO_CLASS_HANDLE    structHnd,
                                         unsigned        curLevel,
@@ -1082,6 +1082,8 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
                                         BasicBlock    * block        /* = NULL */
                                        ) 
 {
+    GenTreePtr dest = nullptr;
+
 #if defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
     assert(varTypeIsStruct(src) ||  (src->gtOper == GT_ADDR && src->TypeGet() == TYP_BYREF));
     // TODO-ARM-BUG: Does ARM need this?
@@ -1109,7 +1111,7 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
             // Case of call returning a struct via hidden retbuf arg
 
             // insert the return value buffer into the argument list as first byref parameter
-            src->gtCall.gtCallArgs = gtNewListNode(dest, src->gtCall.gtCallArgs);
+            src->gtCall.gtCallArgs = gtNewListNode(destAddr, src->gtCall.gtCallArgs);
 
             // now returns void, not a struct
             src->gtType = TYP_VOID;
@@ -1126,12 +1128,12 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
             // We don't need a return buffer, so just change this to "(returnType)*dest = call"
             src->gtType = genActualType(returnType);
 
-            if ((dest->gtOper == GT_ADDR) && (dest->gtOp.gtOp1->gtOper == GT_LCL_VAR))
+            if ((destAddr->gtOper == GT_ADDR) && (destAddr->gtOp.gtOp1->gtOper == GT_LCL_VAR))
             {
                 // If it is a multi-reg struct return, don't change the oper to GT_LCL_FLD.
                 // That is, IR will be of the form lclVar = call for multi-reg return
 
-                GenTreePtr lcl = dest->gtOp.gtOp1;
+                GenTreePtr lcl = destAddr->gtOp.gtOp1;
                 if (!src->AsCall()->HasMultiRegRetVal())
                 {
                     lcl->ChangeOper(GT_LCL_FLD);
@@ -1148,12 +1150,12 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
                 assert(!src->gtCall.IsVarargs() && "varargs not allowed for System V OSs.");
 
                 // Make the struct non promotable. The eightbytes could contain multiple fields.
-                lvaTable[lcl->gtLclVarCommon.gtLclNum].lvIsMultiRegArgOrRet = true;
+                lvaTable[lcl->gtLclVarCommon.gtLclNum].lvIsMultiRegRet = true;
 #endif
             }
             else
             {
-                dest = gtNewOperNode(GT_IND, returnType, dest);
+                dest = gtNewOperNode(GT_IND, returnType, destAddr);
 
                 // !!! The destination could be on stack. !!!
                 // This flag will let us choose the correct write barrier.
@@ -1171,7 +1173,7 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
         if (call->AsCall()->HasRetBufArg())
         {
             // insert the return value buffer into the argument list as first byref parameter
-            call->gtCall.gtCallArgs = gtNewListNode(dest, call->gtCall.gtCallArgs);
+            call->gtCall.gtCallArgs = gtNewListNode(destAddr, call->gtCall.gtCallArgs);
 
             // now returns void, not a struct
             src->gtType  = TYP_VOID;
@@ -1188,7 +1190,7 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
             src->gtType  = genActualType(returnType);
             call->gtType = src->gtType;
 
-            dest = gtNewOperNode(GT_IND, returnType, dest);
+            dest = gtNewOperNode(GT_IND, returnType, destAddr);
 
             // !!! The destination could be on stack. !!!
             // This flag will let us choose the correct write barrier.
@@ -1205,19 +1207,19 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
     else if (src->gtOper == GT_MKREFANY)
     {
         // Since we are assigning the result of a GT_MKREFANY, 
-        // "dest" must point to a refany.
+        // "destAddr" must point to a refany.
 
-        GenTreePtr destClone;
-        dest = impCloneExpr(dest, &destClone, structHnd, curLevel, pAfterStmt DEBUGARG("MKREFANY assignment") );
+        GenTreePtr destAddrClone;
+        destAddr = impCloneExpr(destAddr, &destAddrClone, structHnd, curLevel, pAfterStmt DEBUGARG("MKREFANY assignment") );
 
         assert(offsetof(CORINFO_RefAny, dataPtr) == 0);
-        assert(dest->gtType == TYP_I_IMPL || dest->gtType == TYP_BYREF);
-        GetZeroOffsetFieldMap()->Set(dest, GetFieldSeqStore()->CreateSingleton(GetRefanyDataField()));
-        GenTreePtr ptrSlot  = gtNewOperNode(GT_IND, TYP_I_IMPL, dest);
+        assert(destAddr->gtType == TYP_I_IMPL || destAddr->gtType == TYP_BYREF);
+        GetZeroOffsetFieldMap()->Set(destAddr, GetFieldSeqStore()->CreateSingleton(GetRefanyDataField()));
+        GenTreePtr ptrSlot  = gtNewOperNode(GT_IND, TYP_I_IMPL, destAddr);
         GenTreeIntCon* typeFieldOffset = gtNewIconNode(offsetof(CORINFO_RefAny, type), TYP_I_IMPL);
         typeFieldOffset->gtFieldSeq = GetFieldSeqStore()->CreateSingleton(GetRefanyTypeField());
         GenTreePtr typeSlot = gtNewOperNode(GT_IND, TYP_I_IMPL,
-                                  gtNewOperNode(GT_ADD, dest->gtType, destClone, typeFieldOffset));
+                                  gtNewOperNode(GT_ADD, destAddr->gtType, destAddrClone, typeFieldOffset));
 
         // append the assign of the pointer value
         GenTreePtr asg = gtNewAssignNode(ptrSlot, src->gtOp.gtOp1);
@@ -1235,7 +1237,7 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
     }
     else if (src->gtOper == GT_COMMA)
     {
-        // Second thing is the struct or it's address.
+        // The second thing is the struct or its address.
         assert(varTypeIsStruct(src->gtOp.gtOp2) || src->gtOp.gtOp2->gtType == TYP_BYREF);
         if (pAfterStmt)
         {
@@ -1246,8 +1248,8 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
             impAppendTree(src->gtOp.gtOp1, curLevel, impCurStmtOffs);  // do the side effect
         }
 
-        // evaluate the second thing using recursion
-        return impAssignStructPtr(dest, src->gtOp.gtOp2, structHnd, curLevel, pAfterStmt, block);
+        // Evaluate the second thing using recursion.
+        return impAssignStructPtr(destAddr, src->gtOp.gtOp2, structHnd, curLevel, pAfterStmt, block);
     }
     else if (src->gtOper == GT_ADDR)
     {
@@ -1259,7 +1261,7 @@ GenTreePtr Compiler::impAssignStructPtr(GenTreePtr      dest,
     }
 
     // return a CpObj node, to be appended
-    return gtNewCpObjNode(dest, src, structHnd, false);
+    return gtNewCpObjNode(destAddr, src, structHnd, false);
 }
 
 /*****************************************************************************
@@ -1283,7 +1285,7 @@ GenTreePtr Compiler::impGetStructAddr(GenTreePtr    structVal,
     if (oper == GT_OBJ && willDeref)
     {
         assert(structVal->gtObj.gtClass == structHnd);
-        return(structVal->gtObj.gtOp.gtOp1);
+        return(structVal->gtObj.Addr());
     }
     else if (oper == GT_CALL || oper == GT_RET_EXPR || oper == GT_OBJ || oper == GT_MKREFANY)
     {
@@ -1496,7 +1498,7 @@ GenTreePtr      Compiler::impNormStructVal(GenTreePtr    structVal,
 
     // Normalize it by wraping it in an OBJ
 
-    GenTreePtr structAddr  = impGetStructAddr(structVal, structHnd, curLevel, !forceNormalization); // get the addr of struct
+    GenTreePtr structAddr = impGetStructAddr(structVal, structHnd, curLevel, !forceNormalization); // get the addr of struct
     GenTreePtr structObj = new (this, GT_OBJ) GenTreeObj(structType, structAddr, structHnd);
 
     if (structAddr->gtOper == GT_ADDR)
@@ -1510,9 +1512,10 @@ GenTreePtr      Compiler::impNormStructVal(GenTreePtr    structVal,
     {
         // A OBJ on a ADDR(LCL_VAR) can never raise an exception
         // so we don't set GTF_EXCEPT here.
-        //
-        // TODO-CQ: Clear the GTF_GLOB_REF flag on structObj as well
-        //          but this needs additional work when inlining.
+        if (!lvaIsImplicitByRefLocal(structVal->AsLclVarCommon()->gtLclNum))
+        {
+            structObj->gtFlags &= ~GTF_GLOB_REF;
+        }
     }
     else  
     {
@@ -7541,7 +7544,7 @@ GenTreePtr          Compiler::impFixupStructReturnType(GenTreePtr op, CORINFO_CL
         {
             // Make sure that this struct stays in memory and doesn't get promoted.
             unsigned lclNum = op->gtLclVarCommon.gtLclNum;
-            lvaTable[lclNum].lvIsMultiRegArgOrRet = true;
+            lvaTable[lclNum].lvIsMultiRegRet = true;
 
             return op;
         }
@@ -7565,7 +7568,7 @@ GenTreePtr          Compiler::impFixupStructReturnType(GenTreePtr op, CORINFO_CL
             // This LCL_VAR is an HFA return value, it stays as a TYP_STRUCT
             unsigned lclNum = op->gtLclVarCommon.gtLclNum;
             // Make sure this struct type stays as struct so that we can return it as an HFA
-            lvaTable[lclNum].lvIsMultiRegArgOrRet = true;
+            lvaTable[lclNum].lvIsMultiRegRet = true;
             return op;
         }
          
@@ -7741,6 +7744,14 @@ void                Compiler::impImportLeave(BasicBlock * block)
                                            endCatches, endCatch);
             else
                 endCatches = endCatch;
+
+#ifdef DEBUG
+            if (verbose)
+            {
+                printf("impImportLeave - BB%02u jumping out of catch handler EH#%u, adding call to CORINFO_HELP_ENDCATCH\n",
+                    block->bbNum, XTnum);
+            }
+#endif
         }
         else if (HBtab->HasFinallyHandler() &&
                   jitIsBetween(blkAddr, tryBeg, tryEnd)    &&
@@ -13164,7 +13175,7 @@ FIELD_DONE:
                         // rdi/rsi (depending whether there is a "this").
 
                         unsigned   tmp = lvaGrabTemp(true DEBUGARG("UNBOXing a register returnable nullable"));
-                        lvaTable[tmp].lvIsMultiRegArgOrRet = true;
+                        lvaTable[tmp].lvIsMultiRegArg = true;
                         lvaSetStruct(tmp, resolvedToken.hClass, true  /* unsafe value cls check */);
 
                         op2 = gtNewLclvNode(tmp, TYP_STRUCT);
@@ -13973,7 +13984,7 @@ void Compiler::impMarkLclDstNotPromotable(unsigned tmpNum, GenTreePtr src, CORIN
             (hfaType == TYP_FLOAT && hfaSlots == sizeof(float) / REGSIZE_BYTES))
         {
             // Make sure this struct type stays as struct so we can receive the call in a struct.
-            lvaTable[tmpNum].lvIsMultiRegArgOrRet = true;
+            lvaTable[tmpNum].lvIsMultiRegRet = true;
         }
     }
 }
@@ -13992,7 +14003,7 @@ GenTreePtr Compiler::impAssignMultiRegTypeToVar(GenTreePtr op, CORINFO_CLASS_HAN
     assert(IsMultiRegReturnedType(hClass));
 
     // Mark the var so that fields are not promoted and stay together.
-    lvaTable[tmpNum].lvIsMultiRegArgOrRet = true;
+    lvaTable[tmpNum].lvIsMultiRegRet = true;
 #endif // defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
     return ret;
@@ -16783,15 +16794,17 @@ GenTreePtr  Compiler::impInlineFetchArg(unsigned lclNum, InlArgInfo *inlArgInfo,
             inlArgInfo[lclNum].argHasTmp = true;
             inlArgInfo[lclNum].argTmpNum = tmpNum;
             
-            /* If we require strict exception order then, arguments must
-            be evaulated in sequence before the body of the inlined
-            method. So we need to evaluate them to a temp.
-            Also, if arguments have global references, we need to
-            evaluate them to a temp before the inlined body as the
-            inlined body may be modifying the global ref.
-            */
+            // If we require strict exception order, then arguments must
+            // be evaluated in sequence before the body of the inlined method.
+            // So we need to evaluate them to a temp.
+            // Also, if arguments have global references, we need to
+            // evaluate them to a temp before the inlined body as the
+            // inlined body may be modifying the global ref.
+            // TODO-1stClassStructs: We currently do not reuse an existing lclVar
+            // if it is a struct, because it requires some additional handling.
             
-            if ((!inlArgInfo[lclNum].argHasSideEff) &&
+            if (!varTypeIsStruct(lclTyp) &&
+                (!inlArgInfo[lclNum].argHasSideEff) &&
                 (!inlArgInfo[lclNum].argHasGlobRef))
             {
                 /* Get a *LARGE* LCL_VAR node */

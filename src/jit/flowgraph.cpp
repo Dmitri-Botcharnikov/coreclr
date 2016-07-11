@@ -702,7 +702,7 @@ GenTreeStmt*  Compiler::fgInsertStmtNearEnd(BasicBlock* block, GenTreePtr node)
  *
  *  Insert the given statement "stmt" after GT_STMT node "insertionPoint".
  *  Returns the newly inserted GT_STMT node.
- *  Note that the gtPrev list of statment nodes is circular, but the gtNext list is not.
+ *  Note that the gtPrev list of statement nodes is circular, but the gtNext list is not.
  */
 
 GenTreePtr          Compiler::fgInsertStmtAfter(BasicBlock* block,
@@ -6756,7 +6756,7 @@ bool                Compiler::fgIsCommaThrow(GenTreePtr tree,
     return false;
 }
 
-
+// static
 GenTreePtr          Compiler::fgIsIndirOfAddrOfLocal(GenTreePtr tree)
 {
     GenTreePtr res = nullptr;
@@ -8207,7 +8207,7 @@ void                Compiler::fgAddInternal()
         {
             lvaTable[genReturnLocal].lvType = TYP_STRUCT;
             lvaSetStruct(genReturnLocal, info.compMethodInfo->args.retTypeClass, true);
-            lvaTable[genReturnLocal].lvIsMultiRegArgOrRet = true;
+            lvaTable[genReturnLocal].lvIsMultiRegRet = true;
         }
         else
         {
@@ -8848,6 +8848,7 @@ void                Compiler::fgFindOperOrder()
         {
             /* Recursively process the statement */
 
+            compCurStmt = stmt;
             gtSetStmtInfo(stmt);
         }
     }
@@ -18155,6 +18156,7 @@ void                Compiler::fgSetBlockOrder(BasicBlock* block)
     }
 }
 
+#ifdef LEGACY_BACKEND
 /*****************************************************************************
  *
  * For GT_INITBLK and GT_COPYBLK, the tree looks like this :
@@ -18231,13 +18233,14 @@ void            Compiler::fgOrderBlockOps(GenTreePtr   tree,
     regsPtr[1]  = regs[ order[1] ];
     regsPtr[2]  = regs[ order[2] ];
 }
+#endif // LEGACY_BACKEND
 
 //------------------------------------------------------------------------
 // fgFindTopLevelStmtBackwards: Find the nearest top-level statement to 'stmt', walking the gtPrev links.
 //      The nearest one might be 'stmt' itself.
 //
 // Arguments:
-//    stmt - The statment to start the search with.
+//    stmt - The statement to start the search with.
 //
 // Return Value:
 //    The nearest top-level statement, walking backwards.
@@ -18423,7 +18426,7 @@ void Compiler::fgDeleteTreeFromList(GenTreeStmt* stmt, GenTreePtr tree)
 
 
 //------------------------------------------------------------------------
-// fgTreeIsInStmt: return 'true' if 'tree' is in the execution order list of statment 'stmt'.
+// fgTreeIsInStmt: return 'true' if 'tree' is in the execution order list of statement 'stmt'.
 // This works for a single node or an entire tree, assuming a well-formed tree, where the entire
 // tree's set of nodes are in the statement execution order list.
 //
@@ -18537,7 +18540,7 @@ GenTreeStmt* Compiler::fgInsertTreeBeforeAsEmbedded(GenTree* tree, GenTree* inse
     fgInsertTreeInListBefore(tree, insertionPoint, stmt);
 
     // While inserting a statement as embedded, the parent specified has to be a top-level statement
-    // since we could be inserting it ahead of an already existing embedded statment
+    // since we could be inserting it ahead of an already existing embedded statement
     // in execution order.
     GenTreeStmt* topStmt = fgFindTopLevelStmtBackwards(stmt);
     GenTreeStmt* result = fgMakeEmbeddedStmt(block, tree, topStmt);
@@ -20589,7 +20592,7 @@ void                Compiler::fgDebugCheckFlags(GenTreePtr tree)
     if (chkFlags & ~treeFlags)
     {
         // Print the tree so we can see it in the log.
-        printf("Missing flags on tree [%X]: ", tree);
+        printf("Missing flags on tree [%06d]: ", dspTreeID(tree));
         GenTree::gtDispFlags(chkFlags & ~treeFlags, GTF_DEBUG_NONE);
         printf("\n");
         gtDispTree(tree);
@@ -20597,7 +20600,7 @@ void                Compiler::fgDebugCheckFlags(GenTreePtr tree)
         noway_assert(!"Missing flags on tree");
 
         // Print the tree again so we can see it right after we hook up the debugger.
-        printf("Missing flags on tree [%X]: ", tree);
+        printf("Missing flags on tree [%06d]: ", dspTreeID(tree));
         GenTree::gtDispFlags(chkFlags & ~treeFlags, GTF_DEBUG_NONE);
         printf("\n");
         gtDispTree(tree);
@@ -21504,10 +21507,10 @@ GenTreePtr Compiler::fgAssignStructInlineeToVar(GenTreePtr child, CORINFO_CLASS_
         newInlinee = gtNewAssignNode(dst, src);
 
         // When returning a multi-register value in a local var, make sure the variable is
-        // marked as lvIsMultiRegArgOrRet, so it does not get promoted.
+        // marked as lvIsMultiRegRet, so it does not get promoted.
         if (src->AsCall()->HasMultiRegRetVal())
         {
-            lvaTable[tmpNum].lvIsMultiRegArgOrRet = true;
+            lvaTable[tmpNum].lvIsMultiRegRet = true;
         }
 
         // If inlinee was comma, but a deeper call, new inlinee is (, , , v05 = call())
@@ -21584,38 +21587,32 @@ Compiler::fgWalkResult      Compiler::fgUpdateInlineReturnExpressionPlaceHolder(
                                        : NO_CLASS_HANDLE;
 #endif // defined(FEATURE_HFA) || defined(FEATURE_UNIX_AMD64_STRUCT_PASSING)
 
-
         do
         {
             // Obtained the expanded inline candidate
-            GenTreePtr inlineCandidate;
-
-            inlineCandidate = tree->gtRetExpr.gtInlineCandidate;
-
-            // If the inlineCandidate node is a leaf, we can just overwrite "tree" with it.
-            // But if it's not, we have to make sure to do a deep copy before overwriting it.
-            if (inlineCandidate->OperIsLeaf())
-            {
-                tree->CopyFrom(inlineCandidate, comp);
-            }
-            else
-            {
-                tree->CopyFrom(comp->gtCloneExpr(inlineCandidate), comp);
-#ifdef DEBUG
-                comp->CopyTestDataToCloneTree(inlineCandidate, tree);
-#endif // DEBUG
-            }
+            GenTreePtr inlineCandidate = tree->gtRetExpr.gtInlineCandidate;
 
 #ifdef DEBUG
-            if (false && comp->verbose)
+            if (comp->verbose)
             {
-
-                printf("\nAfter updating the return expression place holder ");
+                printf("\nReplacing the return expression placeholder ");              
                 printTreeID(tree);
-                printf(" for call ");
+                printf(" with ");
                 printTreeID(inlineCandidate);
-                printf(":\n");
+                printf("\n");
+                // Dump out the old return expression placeholder it will be overwritten by the CopyFrom below
                 comp->gtDispTree(tree);
+            }
+#endif // DEBUG
+
+            tree->CopyFrom(inlineCandidate, comp);           
+
+#ifdef DEBUG
+            if (comp->verbose)
+            {
+                printf("\nInserting the inline return expression\n");
+                comp->gtDispTree(tree);
+                printf("\n");
             }
 #endif // DEBUG
         }
@@ -21927,9 +21924,9 @@ void       Compiler::fgInvokeInlineeCompiler(GenTreeCall*  call,
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 void Compiler::fgInsertInlineeBlocks(InlineInfo* pInlineInfo)
 {
-    GenTreePtr   iciCall  = pInlineInfo->iciCall;
-    GenTreePtr   iciStmt  = pInlineInfo->iciStmt;
-    BasicBlock*  iciBlock = pInlineInfo->iciBlock;
+    GenTreePtr   iciCall     = pInlineInfo->iciCall;
+    GenTreePtr   iciStmt     = pInlineInfo->iciStmt;
+    BasicBlock*  iciBlock    = pInlineInfo->iciBlock;
     BasicBlock*  block;
 
     // We can write better assert here. For example, we can check that
@@ -22225,22 +22222,22 @@ _Done:
     if ((pInlineInfo->inlineCandidateInfo->fncRetType != TYP_VOID) || (iciCall->gtCall.gtReturnType == TYP_STRUCT))
     {
         noway_assert(pInlineInfo->retExpr);
-        iciCall->CopyFrom(pInlineInfo->retExpr, this);
-
 #ifdef DEBUG
         if (verbose)
         {
-            printf("\nReturn expression for inlinee ");
+            printf("\nReturn expression for call at ");
             printTreeID(iciCall);
-            printf(" :\n");
-            gtDispTree(iciCall);
+            printf(" is\n");
+            gtDispTree(pInlineInfo->retExpr);
         }
 #endif // DEBUG
+        // Replace the call with the return expression
+        iciCall->CopyFrom(pInlineInfo->retExpr, this);
     }
 
     //
     // Detach the GT_CALL node from the original statement by hanging a "nothing" node under it,
-    // so that fgMorphStmts can remove the statment once we return from here.
+    // so that fgMorphStmts can remove the statement once we return from here.
     //
     iciStmt->gtStmt.gtStmtExpr = gtNewNothingNode();
 }
@@ -22333,9 +22330,11 @@ GenTreePtr      Compiler::fgInlinePrependStatements(InlineInfo* inlineInfo)
                     !(argSingleUseNode->gtFlags & GTF_VAR_CLONED) &&
                     !inlArgInfo[argNum].argHasLdargaOp)
                 {
-                    /* Change the temp in-place to the actual argument */
-
-                    argSingleUseNode->CopyFrom(inlArgInfo[argNum].argNode, this);
+                    // Change the temp in-place to the actual argument.
+                    // We currently do not support this for struct arguments, so it must not be a GT_OBJ.
+                    GenTree* argNode = inlArgInfo[argNum].argNode;
+                    assert(argNode->gtOper != GT_OBJ);
+                    argSingleUseNode->CopyFrom(argNode, this);
                     continue;
                 }
                 else

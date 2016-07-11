@@ -1694,7 +1694,7 @@ regMaskTP           Compiler::rpPredictBlkAsgRegUse(GenTreePtr    tree,
 
     size_t         blkSize        = 0;
 
-    hasGCpointer = ((tree->gtFlags & GTF_BLK_HASGCPTR) != 0);
+    hasGCpointer = (blkNode->HasGCPtr());
 
     bool isCopyBlk = tree->OperIsCopyBlkOp();
     bool isCopyObj = (tree->OperGet() == GT_COPYOBJ);
@@ -4683,7 +4683,7 @@ HANDLE_SHIFT_COUNT:
                     }
                 }
 
-                if (promotedStructLocal != NULL)
+                if ((promotedStructLocal != NULL) && (curArgMask != RBM_NONE))
                 {
                     // All or a portion of this struct will be placed in the argument registers indicated by "curArgMask".
                     // We build in knowledge of the order in which the code is generated here, so that the second arg to be evaluated
