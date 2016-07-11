@@ -583,25 +583,30 @@ void NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, 
     IssueSetAddress(ptr, startAddr);
     IssueSimpleCommand(ptr, DW_LNS_set_prologue_end);
     
-    int prevLine = 1, prevAddr = 0;
+    int prevLine = 1, prevAddr = 0, prevFile = 0;
     
     for (int i = 0; i < nlines; ++i)
     {
-       if (lines[i].lineNumber - prevLine > (DWARF_LINE_BASE + DWARF_LINE_RANGE - 1))
-       {
-           IssueParamCommand(ptr, DW_LNS_advance_line, lines[i].lineNumber - prevLine);
-           prevLine = lines[i].lineNumber;
-       }
-       if (FitIntoSpecialOpcode(lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr))
-           IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr);
-       else
-       {
-           IssueSetAddress(ptr, startAddr + lines[i].nativeOffset);
-           IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, 0);
-       }
+        if (lines[i].fileIndex != prevFile)
+        {
+            IssueParamCommand(ptr, DW_LNS_set_file, lines[i].fileIndex + 1);
+            prevFile = lines[i].fileIndex;
+        }
+        if (lines[i].lineNumber - prevLine > (DWARF_LINE_BASE + DWARF_LINE_RANGE - 1))
+        {
+            IssueParamCommand(ptr, DW_LNS_advance_line, lines[i].lineNumber - prevLine);
+            prevLine = lines[i].lineNumber;
+        }
+        if (FitIntoSpecialOpcode(lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr))
+            IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr);
+        else
+        {
+            IssueSetAddress(ptr, startAddr + lines[i].nativeOffset);
+            IssueSpecialCommand(ptr, lines[i].lineNumber - prevLine, 0);
+        }
            
-       prevLine = lines[i].lineNumber;
-       prevAddr = lines[i].nativeOffset;
+        prevLine = lines[i].lineNumber;
+        prevAddr = lines[i].nativeOffset;
     }
     
     IssueEndOfSequence(ptr); 
