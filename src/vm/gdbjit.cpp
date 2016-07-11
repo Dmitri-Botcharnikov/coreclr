@@ -406,7 +406,16 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     jit_symbols->next_entry = jit_symbols->prev_entry = 0;
     jit_symbols->symfile_addr = elfFile.MemPtr;
     jit_symbols->symfile_size = elfFile.MemSize;
-    __jit_debug_descriptor.first_entry = __jit_debug_descriptor.relevant_entry = jit_symbols;
+    
+    jit_code_entry *head = __jit_debug_descriptor.first_entry;
+    __jit_debug_descriptor.first_entry = jit_symbols;
+    if (head != 0)
+    {
+        jit_symbols->next_entry = head;
+        head->prev_entry = jit_symbols;
+    }
+    
+    __jit_debug_descriptor.relevant_entry = jit_symbols;
     __jit_debug_descriptor.action_flag = JIT_REGISTER_FN;
     __jit_debug_register_code();
 
@@ -415,6 +424,36 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
 void NotifyGdb::MethodDropped(MethodDesc* MethodDescPtr)
 {
     printf("NotifyGdb::MethodDropped %p\n", MethodDescPtr);
+    PCODE pCode = MethodDescPtr->GetNativeCode();
+
+    if (pCode == NULL)
+        return;
+    printf("Native code start: %p\n", pCode);
+    
+    for (jit_code_entry* jit_symbols = __jit_debug_descriptor.first_entry; jit_symbols != 0; jit_symbols = jit_symbols->next_entry)
+    {
+        const char* ptr = jit_symbols->symfile_addr;
+        uint64_t size = jit_symbols->symfile_size;
+        
+        const Elf_Ehdr* pEhdr = reinterpret_cast<const Elf_Ehdr*>(ptr);
+        const Elf_Shdr* pShdr = reinterpret_cast<const Elf_Shdr*>(ptr + pEhdr->e_shoff);
+        ++pShdr; // bump to .text section
+        if (pShdr->sh_addr == pCode)
+        {
+            __jit_debug_descriptor.relevant_entry = jit_symbols;
+            __jit_debug_descriptor.action_flag = JIT_UNREGISTER_FN;
+            __jit_debug_register_code();
+            
+            delete[] ptr;
+            
+            if (jit_symbols->prev_entry == 0)
+                __jit_debug_descriptor.first_entry = jit_symbols->next_entry;
+            else
+                jit_symbols->prev_entry->next_entry = jit_symbols->next_entry;
+            delete jit_symbols;
+            break;
+        }
+    }
 }
 
 bool NotifyGdb::BuildLineTable(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines)
