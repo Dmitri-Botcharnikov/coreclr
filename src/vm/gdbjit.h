@@ -499,8 +499,8 @@ private:
     static bool BuildDebugInfo(MemBuf& buf);
     static bool BuildDebugPub(MemBuf& buf, const char* name, uint32_t size, uint32_t dieOffset);
     static bool BuildLineTable(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines);
-    static void BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines);
-    static void BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines);
+    static bool BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines);
+    static bool BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines);
     static bool FitIntoSpecialOpcode(int8_t line_shift, uint8_t addr_shift);
     static void IssueSetAddress(char*& ptr, PCODE addr);
     static void IssueEndOfSequence(char*& ptr);
