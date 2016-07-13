@@ -587,9 +587,9 @@ bool NotifyGdb::BuildFileTable(MemBuf& buf, SymbolsInfo* lines, unsigned nlines)
     {
         const char *filePath, *fileName;
         SplitPathname(lines[i].fileName, filePath, fileName);
-        
-        lines[i].fileIndex = nfiles;
-        
+
+        lines[i].fileIndex = (nfiles) ? (nfiles - 1) : (nfiles);
+
         bool found = false;
         for (int j = 0; j < nfiles; ++j)
         {
