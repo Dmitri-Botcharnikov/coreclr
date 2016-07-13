@@ -659,10 +659,13 @@ void NotifyGdb::IssueSimpleCommand(char*& ptr, uint8_t command)
     *ptr++ = command;
 }
 
-void NotifyGdb::IssueParamCommand(char*& ptr, uint8_t command, uint8_t param)
+void NotifyGdb::IssueParamCommand(char*& ptr, uint8_t command, char* param, int param_size)
 {
     *ptr++ = command;
-    *ptr++ = param;
+    while (param_size-- > 0)
+    {
+        *ptr++ = *param++;
+    }
 }
 
 void NotifyGdb::IssueSpecialCommand(char*& ptr, int8_t line_shift, uint8_t addr_shift)
@@ -679,6 +682,8 @@ bool NotifyGdb::FitIntoSpecialOpcode(int8_t line_shift, uint8_t addr_shift)
 
 bool NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, unsigned nlines)
 {
+    static char cnv_buf[16];
+    
     buf.MemSize = nlines * ( 4 + ADDRESS_SIZE) + 4;
     buf.MemPtr = new char[buf.MemSize];
     char* ptr = buf.MemPtr;
@@ -695,12 +700,14 @@ bool NotifyGdb::BuildLineProg(MemBuf& buf, PCODE startAddr, SymbolsInfo* lines, 
     {
         if (lines[i].fileIndex != prevFile)
         {
-            IssueParamCommand(ptr, DW_LNS_set_file, lines[i].fileIndex + 1);
+            int len = Leb128Encode(static_cast<uint32_t>(lines[i].fileIndex+1), cnv_buf, sizeof(cnv_buf));
+            IssueParamCommand(ptr, DW_LNS_set_file, cnv_buf, len);
             prevFile = lines[i].fileIndex;
         }
         if (lines[i].lineNumber - prevLine > (DWARF_LINE_BASE + DWARF_LINE_RANGE - 1))
         {
-            IssueParamCommand(ptr, DW_LNS_advance_line, lines[i].lineNumber - prevLine);
+            int len = Leb128Encode(static_cast<int32_t>(lines[i].lineNumber - prevLine), cnv_buf, sizeof(cnv_buf));
+            IssueParamCommand(ptr, DW_LNS_advance_line, cnv_buf, len);
             prevLine = lines[i].lineNumber;
         }
         if (FitIntoSpecialOpcode(lines[i].lineNumber - prevLine, lines[i].nativeOffset - prevAddr))
@@ -900,6 +907,45 @@ void NotifyGdb::SplitPathname(const char* path, const char*& pathName, const cha
         fileName = path;
         pathName = nullptr;
     }
+}
+
+int NotifyGdb::Leb128Encode(uint32_t num, char* buf, int size)
+{
+    int i = 0;
+    
+    do
+    {
+        uint8_t byte = num & 0x7F;
+        if (i >= size)
+            break;
+        num >>= 7;
+        if (num != 0)
+            byte |= 0x80;
+        buf[i++] = byte;
+    }
+    while (num != 0);
+    
+    return i;
+}
+
+int NotifyGdb::Leb128Encode(int32_t num, char* buf, int size)
+{
+    int i = 0;
+    bool hasMore = true, isNegative = num < 0;
+    
+    while (hasMore && i < size)
+    {
+        uint8_t byte = num & 0x7F;
+        num >>= 7;
+        
+        if ((num == 0 && (byte & 0x40) == 0) || (num  == -1 && (byte & 0x40) == 0x40))
+            hasMore = false;
+        else
+            byte |= 0x80;
+        buf[i++] = byte;
+    }
+    
+    return i;
 }
 
 Elf32_Ehdr::Elf32_Ehdr()
