@@ -266,6 +266,10 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
     EECodeInfo codeInfo(pCode);
     TADDR codeSize = codeInfo.GetCodeManager()->GetFunctionSize(codeInfo.GetGCInfo());
     printf("Code size: %d\n", codeSize);
+    
+#ifdef _TARGET_ARM_    
+    pCode &= ~1; // clear thumb flag for debug info
+#endif    
 
     const Module* mod = MethodDescPtr->GetMethodTable()->GetModule();
     SString modName = mod->GetFile()->GetPath();
@@ -419,9 +423,14 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
         return;
     }
     Elf_Ehdr* header = reinterpret_cast<Elf_Ehdr*>(elfHeader.MemPtr);
-#if defined(_TARGET_ARM_)
-    header->e_flags = EF_ARM_EABI;
+#ifdef _TARGET_ARM_
+    header->e_flags = EF_ARM_EABI_VER5;
+#ifdef ARM_SOFTFP
+    header->e_flags |= EF_ARM_SOFT_FLOAT;
+#else    
+    header->e_flags |= EF_ARM_VFP_FLOAT;
 #endif
+#endif    
     header->e_shoff = offset;
     header->e_shentsize = sizeof(Elf_Shdr);
     header->e_shnum = SectionNamesCount - 1;
