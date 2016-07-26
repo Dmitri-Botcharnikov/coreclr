@@ -101,7 +101,7 @@ OFFSET_OF_FRAME=(4 + SIZEOF__GSCookie)
         NESTED_ENTRY CallEHFunclet, _TEXT, NoHandler
 
         PROLOG_PUSH  "{r4-r11, lr}"
-        PROLOG_STACK_SAVE_OFFSET  r7, #12
+        PROLOG_STACK_SAVE_OFFSET  r7, 12
         alloc_stack  4
 
         // On entry:

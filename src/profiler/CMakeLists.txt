@@ -5,6 +5,7 @@ project(CoreProfiler)
 add_definitions(-DPAL_STDCPP_COMPAT)
 
 include_directories(${ARCH_SOURCES_DIR})
+include_directories("${CLR_DIR}/src/pal/src/include")
 
 set(PROFILER_SOURCES_COMMON
   avlnode.cpp

@@ -32,9 +32,15 @@
 //void CallDescrWorkerInternal(CallDescrData * pCallDescrData)//
         NESTED_ENTRY CallDescrWorkerInternal,_TEXT,NoHandler
         PROLOG_PUSH         "{r4,r5,r7,lr}"
-        PROLOG_STACK_SAVE_OFFSET   r7, #8
+        .cfi_adjust_cfa_offset  16 /* 4*4 */
+        .cfi_rel_offset lr, 12
+        .cfi_rel_offset r7, 8
+        .cfi_rel_offset r5, 4
+        .cfi_rel_offset r4, 0
+        PROLOG_STACK_SAVE_OFFSET   r7, 8
 
         mov     r5,r0 // save pCallDescrData in r5
+        .cfi_register r0, r5
 
         ldr     r1, [r5,#CallDescrData__numStackSlots]
         cbz     r1, LOCAL_LABEL(Ldonestack)
@@ -173,8 +179,18 @@ LOCAL_LABEL(LReturnDone):
         
         // Spill callee saved registers and return address.
         PROLOG_PUSH         "{r4-r11,lr}"
+        .cfi_adjust_cfa_offset  36 /* 9*4 */
+        .cfi_rel_offset lr, 32
+        .cfi_rel_offset r11, 28
+        .cfi_rel_offset r10, 24
+        .cfi_rel_offset r9, 20
+        .cfi_rel_offset r8, 16
+        .cfi_rel_offset r7, 12
+        .cfi_rel_offset r6, 8
+        .cfi_rel_offset r5, 4
+        .cfi_rel_offset r4, 0
         
-        PROLOG_STACK_SAVE_OFFSET   r7, #12
+        PROLOG_STACK_SAVE_OFFSET   r7, 12
 
         //
         // This is the code that would have to run to setup this frame
@@ -243,6 +259,16 @@ LOCAL_LABEL(GoodGSCookie):
         //
         EPILOG_STACK_RESTORE_OFFSET   r7, #12
         EPILOG_POP              "{r4-r11,lr}"
+        .cfi_adjust_cfa_offset  -36 /* 9*4 */
+        .cfi_restore r4
+        .cfi_restore r5
+        .cfi_restore r6
+        .cfi_restore r7
+        .cfi_restore r8
+        .cfi_restore r9
+        .cfi_restore r10
+        .cfi_restore r11
+        .cfi_restore lr
         bx lr
         
     NESTED_END TailCallHelperStub, _TEXT
@@ -288,7 +314,7 @@ LOCAL_LABEL(LNullThis):
         NESTED_ENTRY TheUMEntryPrestub,_TEXT,NoHandler
 
         PROLOG_PUSH "{r0-r4,r7,r8,lr}" // add r8 to make stack aligned by 8B
-        PROLOG_STACK_SAVE_OFFSET r7, #20
+        PROLOG_STACK_SAVE_OFFSET r7, 20
         vpush {d0-d7}
 
         CHECK_STACK_ALIGNMENT
@@ -312,7 +338,7 @@ LOCAL_LABEL(LNullThis):
         NESTED_ENTRY UMThunkStub,_TEXT,NoHandler
         PROLOG_PUSH         "{r4,r5,r7,r11,lr}"
         push                {r0-r3,r12}
-        PROLOG_STACK_SAVE_OFFSET   r7, #28
+        PROLOG_STACK_SAVE_OFFSET   r7, 28
 
         //GBLA UMThunkStub_HiddenArgOffest // offset of saved UMEntryThunk *
         //GBLA UMThunkStub_StackArgsOffest // offset of original stack args
@@ -428,7 +454,7 @@ LOCAL_LABEL(UMThunkStub_WrongAppDomain):
         NESTED_ENTRY UM2MThunk_WrapperHelper, _TEXT, NoHandler
 
         PROLOG_PUSH         "{r4-r7,r11,lr}"
-        PROLOG_STACK_SAVE_OFFSET   r7, #12
+        PROLOG_STACK_SAVE_OFFSET   r7, 12
 
         CHECK_STACK_ALIGNMENT
 
@@ -491,7 +517,7 @@ LOCAL_LABEL(UM2MThunk_WrapperHelper_ArgumentsSetup):
 
 // ------------------------------------------------------------------
 
-        NESTED_ENTRY ThePreStub, _TEXT, NoHandler
+        NESTED_ENTRY ThePreStub, _TEXT, NoHandler // ThePrestubHandlerUnix
 
         PROLOG_WITH_TRANSITION_BLOCK
 
@@ -521,7 +547,7 @@ ThePreStubPatchLabel:
         NESTED_ENTRY NDirectImportThunk, _TEXT, NoHandler
 
         PROLOG_PUSH "{r0-r4,r7,r8,lr}"                  // Spill general argument registers, return address and
-        PROLOG_STACK_SAVE_OFFSET r7, #20
+        PROLOG_STACK_SAVE_OFFSET r7, 20
                                                         // arbitrary register to keep stack aligned
         vpush {d0-d7}                                   // Spill floating point argument registers
 
@@ -799,7 +825,7 @@ LOCAL_LABEL(stackProbe_loop):
 
     // Save arguments and return address
     PROLOG_PUSH "{r0-r3, r7,r8, lr}" // keep increase by 8B for alignment
-    PROLOG_STACK_SAVE_OFFSET r7, #20
+    PROLOG_STACK_SAVE_OFFSET r7, 20
 
     // Align stack
     alloc_stack  SIZEOF__FloatArgumentRegisters + 4
@@ -913,7 +939,7 @@ LOCAL_LABEL(stackProbe_loop):
     NESTED_ENTRY JIT_RareDisableHelper, _TEXT, NoHandler
 
     PROLOG_PUSH "{r0-r1, r7,r8, r11, lr}" // save integer return value
-    PROLOG_STACK_SAVE_OFFSET r7, #8
+    PROLOG_STACK_SAVE_OFFSET r7, 8
     vpush {d0-d3}                  // floating point return value
 
     CHECK_STACK_ALIGNMENT

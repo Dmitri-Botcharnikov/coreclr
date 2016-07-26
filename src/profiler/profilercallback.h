@@ -64,13 +64,16 @@ public:
     HRESULT Init(ProfConfig * pProfConfig);
 
     void _SamplingThread();
+    void _LogThread();
+    void SendToLog(ThreadInfo *);
 
 public:
     // used by function hooks, they have to be static
-    static void  Enter( FunctionID functionID );
-    static void  Leave( FunctionID functionID );
-    static void  Tailcall( FunctionID functionID );
+    static void  Enter( UINT_PTR ptr, char *pc );
+    static void  Leave( UINT_PTR ptr );
+    static void  Tailcall( UINT_PTR ptr );
     static ThreadInfo *GetThreadInfo();
+    void PerfHandler(char *PC);
 
 public:
     //
@@ -430,12 +433,16 @@ public:
 
     virtual HRESULT STDMETHODCALLTYPE ExceptionCLRCatcherExecute(void) override;
 
+    void LogToAny( const char *format, ... );
+
 private:
     SIZE_T _StackTraceId(SIZE_T typeId=0, SIZE_T typeSize=0);
     void _LogTickCount();
     void _GetProfConfigFromEnvironment(ProfConfig *pProfConfig);
     void _ProcessProfConfig(ProfConfig *pProfConfig);
-    void LogToAny( const char *format, ... );
+#ifdef NEW_FRAME_STRUCTURE
+    void LogStackChanges(ThreadInfo *pThreadInfo);
+#endif /* NEW_FRAME_STRUCTURE */
 
     HRESULT _LogCallTrace( FunctionID functionID );
     HRESULT _GetNameFromElementType( CorElementType elementType, __out_ecount(buflen) WCHAR *buffer, size_t buflen );
@@ -485,6 +492,7 @@ private:
     DWORD m_firstTickCount;
     DWORD m_lastTickCount;
     DWORD m_lastClockTick;
+    pthread_t m_logqueue;
 
     // names for the events and the callbacks
     char m_logFileName[MAX_LENGTH+1];

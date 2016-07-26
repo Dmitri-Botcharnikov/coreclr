@@ -1,6 +1,8 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
+        .cfi_sections   .debug_frame
+
 
 .macro LEAF_ENTRY Name, Section
         .thumb_func
@@ -8,12 +10,16 @@
         .type \Name, %function
 C_FUNC(\Name):
         .fnstart
+        .cfi_startproc
+        .cfi_def_cfa_register sp
+        .cfi_def_cfa_offset 0
 .endm
 
 .macro NESTED_ENTRY Name, Section, Handler
         LEAF_ENTRY \Name, \Section
         .ifnc \Handler, NoHandler
         .personality C_FUNC(\Handler)
+        .cfi_personality 0,C_FUNC(\Handler)
         .endif
 .endm
 
@@ -30,6 +36,7 @@ C_FUNC(\Name):
 .macro LEAF_END Name, Section
         .size \Name, .-\Name
         .fnend
+        .cfi_endproc
 .endm
 
 .macro LEAF_END_MARKED Name, Section
@@ -62,25 +69,47 @@ C_FUNC(\Name\()_End):
 .endm
 
 .macro alloc_stack Size
-        sub sp, sp, (\Size)
         .pad #(\Size)
+        sub sp, sp, (\Size)
 .endm
 
 .macro free_stack Size
-        add sp, sp, (\Size)
         .pad #-(\Size)
+        add sp, sp, (\Size)
 .endm
 
 .macro POP_CALLEE_SAVED_REGISTERS
         pop_nonvol_reg "{r4-r11, lr}"
+        .cfi_adjust_cfa_offset  -36 /* 9*4 */
+        .cfi_restore r4
+        .cfi_restore r5
+        .cfi_restore r6
+        .cfi_restore r7
+        .cfi_restore r8
+        .cfi_restore r9
+        .cfi_restore r10
+        .cfi_restore r11
+        .cfi_restore lr
 .endm
 
 .macro PUSH_CALLEE_SAVED_REGISTERS
         push_nonvol_reg "{r4-r11, lr}"
+        .cfi_adjust_cfa_offset  36 /* 9*4 */
+        .cfi_rel_offset lr, 32
+        .cfi_rel_offset r11, 28
+        .cfi_rel_offset r10, 24
+        .cfi_rel_offset r9, 20
+        .cfi_rel_offset r8, 16
+        .cfi_rel_offset r7, 12
+        .cfi_rel_offset r6, 8
+        .cfi_rel_offset r5, 4
+        .cfi_rel_offset r4, 0
 .endm
 
 .macro push_register Reg
         push \Reg
+        .cfi_adjust_cfa_offset 4
+        .cfi_rel_offset \Reg, 0
 .endm
 
 .macro push_argument_register Reg
@@ -90,10 +119,17 @@ C_FUNC(\Name\()_End):
 .macro PUSH_ARGUMENT_REGISTERS
         push {r0-r3}
         .save {r0-r3}
+        .cfi_adjust_cfa_offset  16 /* 4*4 */
+        .cfi_rel_offset r3, 12
+        .cfi_rel_offset r2, 8
+        .cfi_rel_offset r1, 4
+        .cfi_rel_offset r0, 0
 .endm
 
 .macro pop_register Reg
         pop \Reg
+        .cfi_adjust_cfa_offset  -4
+        .cfi_restore \Reg
 .endm
 
 .macro pop_argument_register Reg
@@ -102,6 +138,11 @@ C_FUNC(\Name\()_End):
 
 .macro POP_ARGUMENT_REGISTERS
         pop {r0-r3}
+        .cfi_adjust_cfa_offset  -16
+        .cfi_restore r0
+        .cfi_restore r1
+        .cfi_restore r2
+        .cfi_restore r3
 .endm
 
 // Stack layout:
@@ -156,7 +197,7 @@ C_FUNC(\Name\()_End):
         .endif
 
         PUSH_CALLEE_SAVED_REGISTERS
-        PROLOG_STACK_SAVE_OFFSET r7, #12
+        PROLOG_STACK_SAVE_OFFSET r7, 12
         // let r7 point the saved r7 in the stack (clang FP style)
 
         alloc_stack     __PWTB_StackAlloc
@@ -209,11 +250,14 @@ C_FUNC(\Name\()_End):
 .macro PROLOG_STACK_SAVE Register
         .setfp \Register, sp
         mov \Register, sp
+        .cfi_def_cfa_register \Register
 .endm
 
 .macro PROLOG_STACK_SAVE_OFFSET Register, Offset
-        .setfp \Register, sp, \Offset
-        add \Register, sp, \Offset
+        .setfp \Register, sp, #\Offset
+        add \Register, sp, #\Offset
+        .cfi_def_cfa_register \Register
+        .cfi_adjust_cfa_offset -\Offset
 .endm
 
 .macro EPILOG_STACK_FREE Size

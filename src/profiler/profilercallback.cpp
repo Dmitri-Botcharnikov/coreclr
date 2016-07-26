@@ -1,3 +1,12 @@
+#include <signal.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/ucontext.h>
+#include <sys/utsname.h>
+#include <unistd.h>
+#include <execinfo.h>
+#include <sys/time.h>
+
 #include "basehlp.h"
 
 #include <corhlpr.h>
@@ -5,29 +14,55 @@
 #include "profilercallback.h"
 #include "log.h"
 
+#include "../pal/src/config.h"
+#include "pal/context.h"
+//#define UNW_LOCAL_ONLY
+#ifdef UNW_LOCAL_ONLY
+#undef UNW_LOCAL_ONLY
+#endif
+#include <libunwind.h>
+#undef unw_getcontext
+EXTERN_C void unw_getcontext(unw_context_t*);
+
+#undef NULL
+#define NULL 0
+
 #define InitializeCriticalSectionAndSpinCount(lpCriticalSection, dwSpinCount) \
     InitializeCriticalSectionEx(lpCriticalSection, dwSpinCount, 0)
 
 EXTERN_C void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
 EXTERN_C void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
 EXTERN_C void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C char *getPrevPC();
 
 EXTERN_C void __stdcall EnterStub(FunctionIDOrClientID functionIDOrClientID)
 {
+    //UINT_PTR pc = (UINT_PTR)__builtin_return_address(2); x86_64
+    char *pc = getPrevPC();
+    //printf("pc - %x\n", pc);
     LogProfilerActivity("EnterStub\n");
-    ProfilerCallback::Enter(functionIDOrClientID.functionID);
+    ProfilerCallback::Enter(functionIDOrClientID.clientID, pc);
 }
 
 EXTERN_C void __stdcall LeaveStub(FunctionIDOrClientID functionIDOrClientID)
 {
     LogProfilerActivity("LeaveStub\n");
-    ProfilerCallback::Leave(functionIDOrClientID.functionID);
+    ProfilerCallback::Leave(functionIDOrClientID.clientID);
 }
 
 EXTERN_C void __stdcall TailcallStub(FunctionIDOrClientID functionIDOrClientID)
 {
     LogProfilerActivity("TailcallStub\n");
-    ProfilerCallback::Tailcall(functionIDOrClientID.functionID);
+    ProfilerCallback::Tailcall(functionIDOrClientID.clientID);
+}
+
+EXTERN_C UINT_PTR __stdcall FIDMapper2(FunctionID functionId,
+void * clientData, BOOL *pbHookFunction)
+{
+    *pbHookFunction = true;
+    Table<FunctionInfo *, FunctionID> *m_pFunctionTable =
+        (Table<FunctionInfo *, FunctionID> *)clientData;
+    return (UINT_PTR)m_pFunctionTable->Lookup( functionId );
 }
 
 static bool ContainsHighUnicodeCharsOrQuoteChar(__in_ecount(strLen) WCHAR *str, size_t strLen, WCHAR quoteChar)
@@ -171,21 +206,145 @@ HRESULT ProfilerCallback::CreateObject(
     return hr;
 }
 
+#define PROF_SIGNAL (SIGRTMIN+1)
+
+char g_log_buf[2048];
+
+void ProfilerCallback::PerfHandler(char *PC)
+{
+    void *bt[100], *prev = NULL;
+    int count, i = 0;
+    ULONG size;
+    LPCBYTE addr;
+
+    ThreadInfo *pThreadInfo = (ThreadInfo *)TlsGetValue(tlsIndex);
+    if (pThreadInfo && pThreadInfo->m_valid &&
+        pThreadInfo->m_CurrentStackTraceInfo.stack.size() > 0) {
+        int size = pThreadInfo->m_CurrentStackTraceInfo.stack.size();
+        DWORD threadID, funcID;
+        void *pCode = (void *)PC;
+        FunctionInfo *pFunctionInfo =
+            pThreadInfo->m_CurrentStackTraceInfo.stack[size - 1].fInfo;
+        threadID = pThreadInfo->m_win32ThreadID;
+        if (pFunctionInfo) {
+            addr = pFunctionInfo->m_address;
+            size = pFunctionInfo->m_size;
+            if ((LPCBYTE)PC >= addr && (LPCBYTE)PC < (addr + size)) {
+                // We have HIT !
+                pThreadInfo->ProcessHit(this, PC);
+                return;
+            } else {
+                unw_context_t context;
+                unw_getcontext(&context);
+                unw_cursor_t cursor;
+                if (unw_init_local(&cursor, &context) != 0)
+                    return;
+                DWORD32 r11 = 0, sp = 0;
+                DWORD32 prev_sp = 0, prev_pc = 0;
+                while (true) {
+                    unw_word_t val, val1;
+                    if (unw_get_reg(&cursor, 13, &val) != 0)
+                        return;
+
+                    sp = val;
+
+                    if (unw_get_reg(&cursor, 11, &val) != 0)
+                        return;
+
+                    if (val > sp && val < (sp + 0x40000))
+                        r11 = val;
+
+                    if (i >= 3 && unw_get_reg(&cursor, 14, &val) == 0)
+                    {
+                        if ((LPCBYTE)val >= addr &&
+                            (LPCBYTE)val < (addr + size))
+                        {
+                            /* We have HIT */
+                            pThreadInfo->ProcessHit(this, (char*)val);
+                            return;
+                        }
+                        if (prev_sp == sp && prev_pc == (DWORD32)val)
+                            return; // Loop !!!!
+                        prev_sp = sp;
+                        prev_pc = (DWORD32)val;
+                    }
+                    i++;
+                    if (unw_step(&cursor) <= 0)
+                        break;
+                }
+                void **p = (void **)r11;
+                while (p > (void **) sp && p < (void **) (sp + 0x40000))
+                {
+                     LPCBYTE caller = (LPCBYTE)p[1];
+                     if (caller >= addr && caller < (addr + size))
+                     {
+                         /* We have HIT */
+                         pThreadInfo->ProcessHit(this, (char*) caller);
+                         return;
+                     }
+                     p = (void **)p[0];
+                }
+            }   
+        }
+    }
+}
+
+
+static void perf_handler(int code, siginfo_t *siginfo, void *context)
+{
+    native_context_t *ucontext = (native_context_t *)context;
+    char *PC;
+    CONTEXT winContext;
+
+    CONTEXTFromNativeContext(
+            ucontext,
+            &winContext,
+            CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_FLOATING_POINT);
+    PC = (char*)CONTEXTGetPC(&winContext);
+
+    g_pCallbackObject->PerfHandler(PC);
+}
+
+static bool setup_perf_handler()
+{
+    struct sigaction action;
+
+    action.sa_sigaction = perf_handler;
+    action.sa_flags = SA_RESTART | SA_SIGINFO;
+    sigfillset(&action.sa_mask);
+    if (sigaction(PROF_SIGNAL, &action, NULL) < 0) {
+        TEXT_OUTLN("setup_perf_handler: can't set handler\n");
+        return false;
+    }
+    return true;
+}
+
 void ProfilerCallback::_SamplingThread()
 {
-    while(TRUE)
+    if (pthread_setschedprio(pthread_self(), 99))
+        TEXT_OUTLN("Can't set priority\n");
+    while(m_dwShutdown == 0)
     {
         Sleep(m_dwDefaultTimeoutMs);
         {
             Synchronize guard( m_criticalSection );
             // Check all threads
-            SList<ThreadInfo *, ThreadID> *m_pThreadTable = g_pCallbackObject->m_pThreadTable;
+            SList<ThreadInfo *, ThreadID> *m_pThreadTable =
+                g_pCallbackObject->m_pThreadTable;
             m_pThreadTable->Reset();
             for (;!m_pThreadTable->AtEnd(); m_pThreadTable->Next())
             {
+                if (m_dwShutdown != 0)
+                    return;
                 ThreadInfo *pThreadInfo = m_pThreadTable->Entry();
+                pThreadInfo->m_genTicks++;
+                pthread_kill(pThreadInfo->m_tid, PROF_SIGNAL);
+                pthread_yield();
+                if (g_log_buf[0]) {
+                    LogToAny("%s", g_log_buf);
+                    g_log_buf[0] = 0;
+                }
                 // TEXT_OUTLN("SamplingThreadTicks");
-                pThreadInfo->ticks++;
             }
         }
     }
@@ -193,9 +352,55 @@ void ProfilerCallback::_SamplingThread()
 
 static void SamplingThread(ProfilerCallback *pProfiler)
 {
-	TEXT_OUTLN("SamplingThread");
-	pProfiler->_SamplingThread();
+    TEXT_OUTLN("SamplingThread");
+    if (setup_perf_handler())
+        pProfiler->_SamplingThread();
 }
+
+void ProfilerCallback::_LogThread()
+{
+    sigset_t set;
+    siginfo_t it;
+
+    sigemptyset(&set);
+    sigaddset(&set, PROF_SIGNAL);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+    m_logqueue = pthread_self();
+
+    while (m_dwShutdown == 0)
+    {
+        sigwaitinfo(&set, &it);
+        if (it.si_signo != PROF_SIGNAL)
+            continue;
+        ThreadInfo *pThreadInfo = (ThreadInfo *)it.si_value.sival_ptr;
+        { // TODO: pThreadInfo is OK?
+            Synchronize guard( m_criticalSection );
+            // Try to exclude stupid records, which can be dropped
+            if (pThreadInfo->m_LogStackTraceInfo.moment
+                < pThreadInfo->m_LatestStackTraceInfo.moment)
+                continue;
+            if (pThreadInfo->m_genTicks <= pThreadInfo->m_fixTicks)
+                continue;
+            LogToAny("< %d 1",
+                pThreadInfo->m_LogStackTraceInfo.moment - m_firstTickCount);
+            pThreadInfo->LogStackChanges(this, 1);
+            pThreadInfo->m_fixTicks++;
+        }
+    }
+}
+
+static void LogThread(ProfilerCallback *pProfiler)
+{
+    pProfiler->_LogThread();
+}
+
+void ProfilerCallback::SendToLog(ThreadInfo *pThreadInfo)
+{
+    union sigval val;
+    val.sival_ptr = (void *)pThreadInfo;
+    pthread_sigqueue(m_logqueue, PROF_SIGNAL, val);
+}
+
 
 ProfilerCallback::ProfilerCallback()
     : PrfInfo()
@@ -224,11 +429,16 @@ ProfilerCallback::ProfilerCallback()
     , m_dwDefaultTimeoutMs(0) /* Simple sampling support */
     , m_lastTickCount(0)
     , m_lastClockTick(0)
+    , m_logqueue(0)
 {
 }
 
 ProfilerCallback::~ProfilerCallback()
 {
+
+    m_dwDefaultTimeoutMs = 0;
+    signal(PROF_SIGNAL, SIG_IGN);
+
     if (!m_bInitialized)
     {
         return;
@@ -344,15 +554,27 @@ HRESULT ProfilerCallback::Init(ProfConfig * pProfConfig)
     return hr;
 }
 
-__forceinline void ProfilerCallback::Enter(FunctionID functionID)
+__forceinline void ProfilerCallback::Enter(UINT_PTR ptr, char *pc)
 {
+    FunctionInfo *pFunctionInfo = (FunctionInfo*)ptr;
+    FunctionID functionID = pFunctionInfo->m_id;
     ThreadInfo *pThreadInfo = GetThreadInfo();
+
+    //printf("pce - %x\n", pc);
+    //g_pCallbackObject->LogToAny("( 0x%p\n", pc);
 
     if (pThreadInfo != NULL)
     {
-        if ( pThreadInfo->ticks )
+        if ( pThreadInfo->m_fixTicks != pThreadInfo->m_genTicks )
            g_pCallbackObject->_LogCallTrace(functionID); // Do it before push !
+#ifdef NEW_FRAME_STRUCTURE
+        pThreadInfo->m_valid = FALSE;
+        pThreadInfo->m_CurrentStackTraceInfo.Push(pFunctionInfo, pc);
+        pThreadInfo->Check();
+        pThreadInfo->m_valid = TRUE;
+#else
         pThreadInfo->m_pThreadCallStack->Push(functionID);
+#endif /* NEW_FRAME_STRUCTURE */
     }
 
     //
@@ -362,25 +584,43 @@ __forceinline void ProfilerCallback::Enter(FunctionID functionID)
         g_pCallbackObject->_LogCallTrace(functionID);
 }
 
-__forceinline void ProfilerCallback::Leave(FunctionID functionID)
+__forceinline void ProfilerCallback::Leave(UINT_PTR ptr)
 {
     ThreadInfo *pThreadInfo = GetThreadInfo();
     if (pThreadInfo != NULL)
     {
-        if ( pThreadInfo->ticks )
+        if ( pThreadInfo->m_fixTicks != pThreadInfo->m_genTicks )
+        {
+            FunctionID functionID = ((FunctionInfo*)ptr)->m_id;
             g_pCallbackObject->_LogCallTrace(functionID); // Do it before pop !
+        }
+#ifdef NEW_FRAME_STRUCTURE
+        pThreadInfo->m_valid = FALSE;
+        pThreadInfo->m_CurrentStackTraceInfo.Pop();
+        pThreadInfo->m_valid = TRUE;
+#else
         pThreadInfo->m_pThreadCallStack->Pop();
+#endif /* NEW_FRAME_STRUCTURE */
     }
 }
 
-__forceinline void ProfilerCallback::Tailcall(FunctionID functionID)
+__forceinline void ProfilerCallback::Tailcall(UINT_PTR ptr)
 {
     ThreadInfo *pThreadInfo = GetThreadInfo();
     if (pThreadInfo != NULL)
     {
-        if ( pThreadInfo->ticks )
+        if ( pThreadInfo->m_fixTicks != pThreadInfo->m_genTicks )
+        {
+            FunctionID functionID = ((FunctionInfo*)ptr)->m_id;
             g_pCallbackObject->_LogCallTrace(functionID); // Do it before pop !
+        }
+#ifdef NEW_FRAME_STRUCTURE
+        pThreadInfo->m_valid = FALSE;
+        pThreadInfo->m_CurrentStackTraceInfo.Pop();
+        pThreadInfo->m_valid = TRUE;
+#else
         pThreadInfo->m_pThreadCallStack->Pop();
+#endif /* NEW_FRAME_STRUCTURE */
     }
 }
 
@@ -496,6 +736,14 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
         return hr;
     }
 
+    hr = m_pProfilerInfo3->SetFunctionIDMapper2(FIDMapper2, m_pFunctionTable);
+
+    if (FAILED(hr))
+    {
+        Failure( "ICorProfilerInfo::SetFunctionIDMapper2() FAILED" );
+        return hr;
+    }
+
     hr = Init(&profConfig);
     if ( FAILED( hr ) )
     {
@@ -510,8 +758,9 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::Initialize(
 
 HRESULT STDMETHODCALLTYPE ProfilerCallback::Shutdown(void)
 {
-    LogProfilerActivity("Shutdown\n");
+    signal(PROF_SIGNAL, SIG_IGN);
     m_dwShutdown++;
+    LogProfilerActivity("Shutdown\n");
     return S_OK;
 }
 
@@ -521,6 +770,7 @@ HRESULT ProfilerCallback::DllDetachShutdown()
     // interface pointer. This scenario will more than likely occur
     // with any interop related program (e.g., a program that is
     // comprised of both managed and unmanaged components).
+    signal(PROF_SIGNAL, SIG_IGN);
     m_dwShutdown++;
     if ((m_dwShutdown == 1) && (g_pCallbackObject != NULL))
     {
@@ -740,6 +990,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationStarted(
 
     try
     {
+        UpdateCallStack( NULL, PUSH );
         AddFunction( functionId, m_totalFunctions );
         m_totalFunctions++;
     }
@@ -775,6 +1026,8 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
 
     _ASSERT_( pFunctionInfo != NULL );
     hr = m_pProfilerInfo->GetCodeInfo( functionId, &address, &size );
+    pFunctionInfo->m_address = address;
+    pFunctionInfo->m_size = size;
     if ( FAILED( hr ) )
     {
         address = NULL;
@@ -802,6 +1055,33 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
                 size,
                 pModuleInfo ? pModuleInfo->m_internalID : 0,
                 stackTraceId);
+
+    UpdateCallStack( NULL, POP );
+    ULONG32 pcMap;
+    pFunctionInfo->pcMap = 0;
+    hr = m_pProfilerInfo->GetILToNativeMapping(functionId, 0, &pcMap, NULL);
+    if ( SUCCEEDED( hr ) && (pcMap != 0))
+    {
+        COR_DEBUG_IL_TO_NATIVE_MAP *map = new COR_DEBUG_IL_TO_NATIVE_MAP[pcMap];
+        hr = m_pProfilerInfo->GetILToNativeMapping(functionId, pcMap,
+                                                   &pcMap, map);
+        if ( SUCCEEDED( hr ) )
+        {
+            pFunctionInfo->pcMap = pcMap;
+            pFunctionInfo->map = map;
+            // Try to output it
+            LogToAny( ": %Id", pFunctionInfo->m_internalID);
+            for (int i = 0; i < pcMap; i++)
+            {
+                COR_DEBUG_IL_TO_NATIVE_MAP *m = &map[i];
+                LogToAny( " 0x%x:0x%x:0x%x", m->ilOffset,
+                            m->nativeStartOffset, m->nativeEndOffset);
+            }
+            LogToAny( "\n");
+        } else {
+            delete[] map;
+        }
+    }
 
     return S_OK;
 }
@@ -1070,7 +1350,11 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::UnmanagedToManagedTransition(
         try
         {
             // you need to pop the pseudo function Id from the stack
+#ifdef NEW_FRAME_STRUCTURE
+            UpdateCallStack( NULL, POP );
+#else
             UpdateCallStack( functionId, POP );
+#endif /* NEW_FRAME_STRUCTURE */
         }
         catch ( BaseException *exception )
         {
@@ -1243,10 +1527,25 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectAllocated(
             hr = m_pProfilerInfo->GetObjectSize( objectId, &mySize );
             if ( SUCCEEDED( hr ) )
             {
-                if (GetTickCount() - m_lastClockTick >= 1)
+                DWORD tick = GetTickCount();
+                if (tick - m_lastClockTick >= 1)
                     _LogTickCount();
 
                 SIZE_T stackTraceId = _StackTraceId(classId, mySize);
+#ifdef NEW_FRAME_STRUCTURE
+                ClassInfo *pClassInfo = NULL;
+                if (!mySize)
+                    return hr;
+                hr = _InsertGCClass( &pClassInfo, classId );
+                if ( !SUCCEEDED( hr ) ) {
+                    Failure( "ERROR: _InsertGCClass() FAILED" );
+                }
+
+                LogToAny( "A %p %d %d", objectId, pClassInfo->m_internalID,
+                    mySize);
+                pThreadInfo->m_LatestStackTraceInfo.moment = tick;
+                LogStackChanges(pThreadInfo);
+#else
 #if 1
                 char buffer[128];
                 char *p = buffer;
@@ -1273,6 +1572,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ObjectAllocated(
                     LogToAny("! %Id 0x%p %Id\n", pThreadInfo->m_win32ThreadID, objectId, stackTraceId);
                 }
 #endif
+#endif /* NEW_FRAME_STRUCTURE */
             }
         }
         else
@@ -1776,7 +2076,11 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::ExceptionUnwindFunctionLeave(void)
     try
     {
         UpdateUnwindStack( &poppedFunctionID, POP );
+#ifdef NEW_FRAME_STRUCTURE
+        UpdateCallStack( NULL, POP );
+#else
         UpdateCallStack( poppedFunctionID, POP );
+#endif /* NEW_FRAME_STRUCTURE */
     }
     catch ( BaseException *exception )
     {
@@ -1932,6 +2236,12 @@ SIZE_T ProfilerCallback::_StackTraceId(SIZE_T typeId, SIZE_T typeSize)
     ThreadInfo *pThreadInfo = GetThreadInfo();
     if ( pThreadInfo != NULL )
     {
+#ifdef NEW_FRAME_STRUCTURE
+        pThreadInfo->m_CurrentStackTraceInfo.m_typeId = typeId;
+        pThreadInfo->m_CurrentStackTraceInfo.m_typeSize = typeSize;
+        /* TODO: Check conditions */
+        /* Compare states and output for old case ? */
+#else
         DWORD count = pThreadInfo->m_pThreadCallStack->Count();
         StackTrace stackTrace(count, pThreadInfo->m_pThreadCallStack->m_Array, typeId, typeSize);
         StackTraceInfo *latestStackTraceInfo = pThreadInfo->m_pLatestStackTraceInfo;
@@ -2014,6 +2324,7 @@ SIZE_T ProfilerCallback::_StackTraceId(SIZE_T typeId, SIZE_T typeSize)
         LogToAny("\n");
 
         return stackTraceInfo->m_internalId;
+#endif /* NEW_FRAME_STRUCTURE */
     }
     else
         Failure( "ERROR: Thread Structure was not found in the thread list" );
@@ -2303,6 +2614,7 @@ void ProfilerCallback::_ProcessProfConfig(ProfConfig * pProfConfig)
     {
         DWORD ourId = 0;
         m_dwDefaultTimeoutMs = pProfConfig->dwDefaultTimeoutMs;
+        ::CreateThread( NULL, 0, (LPTHREAD_START_ROUTINE)LogThread, (void*)this, THREAD_PRIORITY_NORMAL, &ourId);
         ::CreateThread( NULL, 0, (LPTHREAD_START_ROUTINE)SamplingThread, (void*)this, THREAD_PRIORITY_NORMAL, &ourId);
     }
 
@@ -2321,6 +2633,13 @@ void ProfilerCallback::LogToAny( const char *format, ... )
     va_end( args );
 }
 
+#ifdef NEW_FRAME_STRUCTURE
+void ProfilerCallback::LogStackChanges(ThreadInfo *pThreadInfo)
+{
+            pThreadInfo->LogStackChanges(this, 0);
+}
+#endif /* NEW_FRAME_STRUCTURE */
+
 HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
 {
     ///////////////////////////////////////////////////////////////////////////
@@ -2337,14 +2656,29 @@ HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
     {
         SIZE_T stackTraceId = _StackTraceId();
 #if 1
+#ifdef NEW_FRAME_STRUCTURE
+    if (m_dwDefaultTimeoutMs)
+    {
+       DWORD tick = GetTickCount();
+       DWORD ticks = pThreadInfo->m_genTicks - pThreadInfo->m_fixTicks;
+       if (!ticks)
+           return hr;
+        pThreadInfo->m_fixTicks += ticks;
+        LogToAny( "< %d %d",  tick - m_firstTickCount, ticks);
+        pThreadInfo->m_LatestStackTraceInfo.moment = tick;
+    } else {
+        LogToAny( "|");
+    }
+    LogStackChanges(pThreadInfo);
+#else
         char buffer[128];
         char *p = buffer;
         if (m_dwDefaultTimeoutMs)
         {
-            DWORD ticks = pThreadInfo->ticks;
+            DWORD ticks = pThreadInfo->m_genTicks - pThreadInfo->m_fixTicks;
             if (!ticks)
                 return hr;
-            pThreadInfo->ticks = 0;
+            pThreadInfo->m_fixTicks += ticks;
             *p++ = 'x';
             p = putdec(p, GetTickCount() - m_firstTickCount);
             p = putdec(p, ticks);
@@ -2355,6 +2689,7 @@ HRESULT ProfilerCallback::_LogCallTrace( FunctionID functionID )
         p = putdec(p, stackTraceId);
         *p++ = '\n';
         PAL_fwrite(buffer, p - buffer, 1, m_stream);
+#endif 
 #else
         LogToAny( "c %d %Id\n", pThreadInfo->m_win32ThreadID, stackTraceId );
 #endif

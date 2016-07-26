@@ -12,12 +12,14 @@
  *
  *
  ***************************************************************************************/
+#include <pthread.h>
 #include "avlnode.h"
 #include "basehlp.h"
 
 #include "ProfilerInfo.h"
+#include "profilercallback.h"
 
-
+#ifndef NEW_FRAME_STRUCTURE
 /***************************************************************************************
  ********************                                               ********************
  ********************             LStack Implementation             ********************
@@ -244,6 +246,7 @@ BOOL LStack::Empty()
     return (BOOL)(m_Count == NULL);
 
 } // LStack::Empty
+#endif /* NEW_FRAME_STRUCTURE */
 
 
 /***************************************************************************************
@@ -407,11 +410,19 @@ void BaseInfo::Dump( )
 ThreadInfo::ThreadInfo( ThreadID threadID, SIZE_T internal ) :
     BaseInfo( threadID, internal ),
     m_win32ThreadID( 0 ),
-    ticks( 0 ) // Simple sampling support
+    m_valid( FALSE ),
+    m_logIsBusy( FALSE ),
+    m_genTicks( 0 ), // Simple sampling support
+    m_fixTicks( 0 )  // Simple sampling support
 {
+#ifdef NEW_FRAME_STRUCTURE
+    m_LatestUnwoundFunction.reserve( MAX_LENGTH );
+    m_valid = TRUE;
+#else
     m_pThreadCallStack = new LStack( MAX_LENGTH );
     m_pLatestUnwoundFunction = new LStack( MAX_LENGTH );
     m_pLatestStackTraceInfo = NULL;
+#endif /* NEW_FRAME_STRUCTURE */
 } // ctor
 
 
@@ -434,6 +445,7 @@ ThreadInfo::ThreadInfo( ThreadID threadID, SIZE_T internal ) :
 /* public virtual */
 ThreadInfo::~ThreadInfo()
 {
+#ifndef NEW_FRAME_STRUCTURE
     if ( m_pThreadCallStack != NULL )
     {
         delete m_pThreadCallStack;
@@ -445,6 +457,7 @@ ThreadInfo::~ThreadInfo()
         delete m_pLatestUnwoundFunction;
         m_pLatestUnwoundFunction = NULL;
     }
+#endif /* NEW_FRAME_STRUCTURE */
 
 } // dtor
 
@@ -469,6 +482,43 @@ ThreadInfo::~ThreadInfo()
 void ThreadInfo::Dump()
 {} // ThreadInfo::Dump
 
+void ThreadInfo::ProcessHit(ProfilerCallback *pProfiler, char *PC)
+{
+    // We must setup last PC
+    m_CurrentStackTraceInfo.stack[m_CurrentStackTraceInfo.stack.size() - 1].pc = PC;
+    m_LogStackTraceInfo.stack = m_CurrentStackTraceInfo.stack;
+    m_LogStackTraceInfo.moment = GetTickCount();
+    m_logIsBusy = TRUE;
+    pProfiler->SendToLog(this);
+}
+
+void ThreadInfo::LogStackChanges(ProfilerCallback *pProfiler, int mode)
+{
+    int match = 0;
+    if (mode && m_LogStackTraceInfo.moment < m_LatestStackTraceInfo.moment)
+        return;
+    StackTraceInfo *si = mode ? &m_LogStackTraceInfo
+                              : &m_CurrentStackTraceInfo;
+    int size = std::min(m_LatestStackTraceInfo.stack.size(),
+                        si->stack.size());
+    for (; match < size; match++)
+        if (!m_LatestStackTraceInfo.stack[match].Compare(
+            si->stack[match]))
+                break;
+    pProfiler->LogToAny( " %d %d:%d", m_win32ThreadID, match,
+                         m_LatestStackTraceInfo.stack.size());
+    for (int i = match; i < si->stack.size(); i++)
+    {
+        FunctionInfo *fInfo = si->stack[i].fInfo;
+        if (fInfo == NULL)
+            break;
+        pProfiler->LogToAny( " %d:%p", fInfo->m_internalID, si->stack[i].pc);
+    }
+    pProfiler->LogToAny( "\n");
+
+    // We can update previous stack trace
+    m_LatestStackTraceInfo.stack = si->stack;
+}
 
 /***************************************************************************************
  ********************                                               ********************
@@ -499,6 +549,9 @@ FunctionInfo::FunctionInfo( FunctionID functionID, SIZE_T internal ) :
     wcscpy_s( m_functionName, ARRAY_LEN(m_functionName), W("UNKNOWN") );
     wcscpy_s( m_functionSig, ARRAY_LEN(m_functionSig), W("") );
 
+    m_address = NULL;
+    m_size = 0;
+    pcMap = 0; map = NULL;
 
 } // ctor
 
@@ -522,6 +575,7 @@ FunctionInfo::FunctionInfo( FunctionID functionID, SIZE_T internal ) :
 /* public virtual */
 FunctionInfo::~FunctionInfo()
 {
+    if (pcMap) delete[] map;
 } // dtor
 
 
@@ -728,15 +782,19 @@ PrfInfo::PrfInfo() :
     m_pThreadTable( NULL ),
     m_pClassTable( NULL ),
     m_pModuleTable( NULL ),
-    m_pFunctionTable( NULL ),
-    m_pStackTraceTable( NULL )
+    m_pFunctionTable( NULL )
+#ifndef NEW_FRAME_STRUCTURE
+    ,m_pStackTraceTable( NULL )
+#endif /* NEW_FRAME_STRUCTURE */
 {
     // initialize tables
     m_pClassTable = new HashTable<ClassInfo *, ClassID>();
     m_pThreadTable = new SList<ThreadInfo *, ThreadID>();
     m_pModuleTable = new Table<ModuleInfo *, ModuleID>();
     m_pFunctionTable = new Table<FunctionInfo *, FunctionID>();
+#ifndef NEW_FRAME_STRUCTURE
     m_pStackTraceTable = new HashTable<StackTraceInfo *, StackTrace>();
+#endif /* NEW_FRAME_STRUCTURE */
 
 } // ctor
 
@@ -797,11 +855,13 @@ PrfInfo::~PrfInfo()
         m_pModuleTable = NULL;
     }
 
+#ifndef NEW_FRAME_STRUCTURE
     if ( m_pStackTraceTable != NULL )
     {
         delete m_pStackTraceTable;
         m_pStackTraceTable = NULL;
     }
+#endif /* NEW_FRAME_STRUCTURE */
 
 } // dtor
 
@@ -839,6 +899,7 @@ void PrfInfo::AddThread( ThreadID threadID )
 
 
             pThreadInfo = new ThreadInfo( threadID );
+            pThreadInfo->m_tid = pthread_self();
             if ( pThreadInfo != NULL )
             {
                 hr = m_pProfilerInfo->GetThreadInfo( pThreadInfo->m_id, &(pThreadInfo->m_win32ThreadID) );
@@ -1161,11 +1222,20 @@ void PrfInfo::UpdateUnwindStack( FunctionID *functionID, StackAction action )
             switch ( action )
             {
                 case PUSH:
+#ifdef NEW_FRAME_STRUCTURE
+                    pThreadInfo->m_LatestUnwoundFunction.push_back( *functionID );
+#else
                     (pThreadInfo->m_pLatestUnwoundFunction)->Push( *functionID );
+#endif
                     break;
 
                 case POP:
+#ifdef NEW_FRAME_STRUCTURE
+                    *functionID = pThreadInfo->m_LatestUnwoundFunction.back();
+                    pThreadInfo->m_LatestUnwoundFunction.pop_back();
+#else
                     *functionID = (pThreadInfo->m_pLatestUnwoundFunction)->Pop();
+#endif
                     break;
             }
         }
@@ -1195,7 +1265,11 @@ void PrfInfo::UpdateUnwindStack( FunctionID *functionID, StackAction action )
  *
  ***************************************************************************************/
 /* public */
+#ifdef NEW_FRAME_STRUCTURE
+void PrfInfo::UpdateCallStack( FunctionInfo *pFunctionInfo, StackAction action )
+#else
 void PrfInfo::UpdateCallStack( FunctionID functionID, StackAction action )
+#endif /* NEW_FRAME_STRUCTURE */
 {
     HRESULT hr = S_OK;
     ThreadID threadID;
@@ -1220,11 +1294,22 @@ void PrfInfo::UpdateCallStack( FunctionID functionID, StackAction action )
             switch ( action )
             {
                 case PUSH:
+#ifdef NEW_FRAME_STRUCTURE
+                    pThreadInfo->m_valid = FALSE;
+                    pThreadInfo->m_CurrentStackTraceInfo.Push( pFunctionInfo );
+                    pThreadInfo->m_LatestStackTraceInfo.Check(pThreadInfo->m_CurrentStackTraceInfo);
+                    pThreadInfo->m_valid = TRUE;
+#else
                     (pThreadInfo->m_pThreadCallStack)->Push( functionID );
+#endif /* NEW_FRAME_STRUCTURE */
                     break;
 
                 case POP:
+#ifdef NEW_FRAME_STRUCTURE
+                    pThreadInfo->m_CurrentStackTraceInfo.Pop();
+#else
                     (pThreadInfo->m_pThreadCallStack)->Pop();
+#endif /* NEW_FRAME_STRUCTURE */
                     break;
             }
         }

@@ -19,7 +19,11 @@
 #include "avlnode.h"
 #include "basehlp.h"
 #include "container.hpp"
+#undef min
+#undef max
+#include <vector>
 
+#define NEW_FRAME_STRUCTURE 1
 
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
@@ -174,6 +178,7 @@ class BaseInfo
  ********************              StackTrace Declaration           ********************
  ********************                                               ********************
  ***************************************************************************************/
+#ifndef NEW_FRAME_STRUCTURE
 struct StackTrace
 {
     DWORD m_count;
@@ -200,7 +205,7 @@ struct StackTrace
         return m_key;
     }
 }; // StackTrace
-
+#endif /* !NEW_FRAME_STRUCTURE */
 
 /***************************************************************************************
  ********************                                               ********************
@@ -208,6 +213,73 @@ struct StackTrace
  ********************                                               ********************
  ***************************************************************************************/
 
+#ifdef NEW_FRAME_STRUCTURE
+class FunctionInfo;
+
+struct StackTraceFrame
+{
+    FunctionInfo *fInfo;
+    char* pc;
+    // Something else ?
+public:
+    StackTraceFrame(FunctionInfo *fInfo) : fInfo(fInfo), pc(0) {}
+    BOOL Compare( const StackTraceFrame &frame )
+    {
+        if (this->fInfo != frame.fInfo)
+            return FALSE;
+        if (this->pc != frame.pc)
+            return FALSE;
+        return TRUE;
+    }
+};
+
+class StackTraceInfo
+{
+public:
+    SIZE_T m_typeId;
+    SIZE_T m_typeSize;
+    SIZE_T m_internalId;
+    std::vector<StackTraceFrame> stack;
+
+    StackTraceInfo() : m_typeId(0), m_typeSize(0), m_internalId(0)
+    {
+        stack.reserve(MAX_LENGTH);
+    }
+
+    void Pop() { stack.pop_back(); m_typeId = 0; m_typeSize = 0;}
+
+    void Push(FunctionInfo *fInfo)
+    {
+        StackTraceFrame frame(fInfo);
+        stack.push_back(frame);
+        m_typeId = 0; m_typeSize = 0;
+    }
+
+    void Push(FunctionInfo *fInfo, char *pc)
+    {
+        int size = stack.size();
+        if (size > 0)
+           stack[size - 1].pc = pc; // Previous !!
+        StackTraceFrame frame(fInfo);
+        stack.push_back(frame);
+        m_typeId = 0; m_typeSize = 0;
+    }
+
+    void Check(StackTraceInfo& ti)
+    {
+        if (stack.capacity() < ti.stack.capacity())
+            stack.reserve(ti.stack.capacity());
+    }
+};
+
+class TStackTraceInfo : public StackTraceInfo
+{
+public:
+    DWORD moment;
+    TStackTraceInfo() : StackTraceInfo(), moment(0) {}
+};
+
+#else
 class StackTraceInfo
 {
 public:
@@ -257,12 +329,14 @@ public:
         return TRUE;
     }
 };
+#endif /* NEW_FRAME_STRUCTURE */
 
 /***************************************************************************************
  ********************                                               ********************
  ********************            ThreadInfo Declaration             ********************
  ********************                                               ********************
  ***************************************************************************************/
+class ProfilerCallback;
 class ThreadInfo :
     public BaseInfo
 {
@@ -280,11 +354,31 @@ class ThreadInfo :
     public:
 
         DWORD  m_win32ThreadID;
+        DWORD  m_tid;
+#ifdef NEW_FRAME_STRUCTURE
+        volatile BOOL m_valid;
+        std::vector<SIZE_T> m_LatestUnwoundFunction;
+
+        BOOL m_logIsBusy;
+        TStackTraceInfo m_LogStackTraceInfo;
+        TStackTraceInfo m_LatestStackTraceInfo;
+        StackTraceInfo m_CurrentStackTraceInfo;
+        void ProcessHit(ProfilerCallback *pProfiler, char *PC);
+        void LogStackChanges(ProfilerCallback *pProfiler, int mode);
+        void Check()
+        {
+             if (m_logIsBusy)
+                 return;
+             m_LogStackTraceInfo.Check(m_CurrentStackTraceInfo);
+        }
+#else
         LStack *m_pThreadCallStack;
         LStack *m_pLatestUnwoundFunction;
 
         StackTraceInfo *m_pLatestStackTraceInfo;
-        DWORD ticks;	/* Simple sampling support */
+#endif
+        volatile DWORD m_genTicks;	/* Simple sampling support */
+        volatile DWORD m_fixTicks;	/* Simple sampling support */
 
 }; // ThreadInfo
 
@@ -312,6 +406,10 @@ class FunctionInfo :
 
         WCHAR    m_functionName[MAX_LENGTH];
         WCHAR    m_functionSig[4*MAX_LENGTH];
+        LPCBYTE  m_address;
+        ULONG    m_size;
+        ULONG32  pcMap;
+        COR_DEBUG_IL_TO_NATIVE_MAP *map;
 
 }; // FunctionInfo
 
@@ -394,7 +492,11 @@ class PrfInfo
         void AddModule( ModuleID moduleID, SIZE_T internalID = 0 );
         void RemoveModule( ModuleID moduleID );
 
+#ifdef NEW_FRAME_STRUCTURE
+        void UpdateCallStack( FunctionInfo *pFunctionInfo, StackAction action );
+#else
         void UpdateCallStack( FunctionID functionID, StackAction action );
+#endif /* NEW_FRAME_STRUCTURE */
         void UpdateOSThreadID( ThreadID managedThreadID, DWORD osThreadID );
         void UpdateUnwindStack( FunctionID *functionID, StackAction action );
         HRESULT GetNameFromClassID( ClassID classID, __out_nz WCHAR className[] );
@@ -449,7 +551,9 @@ class PrfInfo
         HashTable<ClassInfo *, ClassID> *m_pClassTable;
         Table<ModuleInfo *, ModuleID> *m_pModuleTable;
         Table<FunctionInfo *, FunctionID> *m_pFunctionTable;
+#ifndef NEW_FRAME_STRUCTURE
         HashTable<StackTraceInfo *, StackTrace> *m_pStackTraceTable;
+#endif /* NEW_FRAME_STRUCTURE */
 
 }; // PrfInfo
 
