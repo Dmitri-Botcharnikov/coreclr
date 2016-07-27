@@ -16,7 +16,6 @@
 
 #include "../pal/src/config.h"
 #include "pal/context.h"
-//#define UNW_LOCAL_ONLY
 #ifdef UNW_LOCAL_ONLY
 #undef UNW_LOCAL_ONLY
 #endif
@@ -208,11 +207,9 @@ HRESULT ProfilerCallback::CreateObject(
 
 #define PROF_SIGNAL (SIGRTMIN+1)
 
-char g_log_buf[2048];
 
 void ProfilerCallback::PerfHandler(char *PC)
 {
-    void *bt[100], *prev = NULL;
     int count, i = 0;
     ULONG size;
     LPCBYTE addr;
@@ -239,20 +236,14 @@ void ProfilerCallback::PerfHandler(char *PC)
                 unw_cursor_t cursor;
                 if (unw_init_local(&cursor, &context) != 0)
                     return;
-                DWORD32 r11 = 0, sp = 0;
+                DWORD32 sp = 0;
                 DWORD32 prev_sp = 0, prev_pc = 0;
+                unw_word_t val;
                 while (true) {
-                    unw_word_t val, val1;
                     if (unw_get_reg(&cursor, 13, &val) != 0)
                         return;
 
                     sp = val;
-
-                    if (unw_get_reg(&cursor, 11, &val) != 0)
-                        return;
-
-                    if (val > sp && val < (sp + 0x40000))
-                        r11 = val;
 
                     if (i >= 3 && unw_get_reg(&cursor, 14, &val) == 0)
                     {
@@ -264,7 +255,7 @@ void ProfilerCallback::PerfHandler(char *PC)
                             return;
                         }
                         if (prev_sp == sp && prev_pc == (DWORD32)val)
-                            return; // Loop !!!!
+                            break; // Loop !!!!
                         prev_sp = sp;
                         prev_pc = (DWORD32)val;
                     }
@@ -272,7 +263,10 @@ void ProfilerCallback::PerfHandler(char *PC)
                     if (unw_step(&cursor) <= 0)
                         break;
                 }
-                void **p = (void **)r11;
+                if (unw_get_reg(&cursor, 11, &val) != 0)
+                    return;
+
+                void **p = (void **)val;
                 while (p > (void **) sp && p < (void **) (sp + 0x40000))
                 {
                      LPCBYTE caller = (LPCBYTE)p[1];
@@ -321,8 +315,6 @@ static bool setup_perf_handler()
 
 void ProfilerCallback::_SamplingThread()
 {
-    if (pthread_setschedprio(pthread_self(), 99))
-        TEXT_OUTLN("Can't set priority\n");
     while(m_dwShutdown == 0)
     {
         Sleep(m_dwDefaultTimeoutMs);
@@ -339,12 +331,6 @@ void ProfilerCallback::_SamplingThread()
                 ThreadInfo *pThreadInfo = m_pThreadTable->Entry();
                 pThreadInfo->m_genTicks++;
                 pthread_kill(pThreadInfo->m_tid, PROF_SIGNAL);
-                pthread_yield();
-                if (g_log_buf[0]) {
-                    LogToAny("%s", g_log_buf);
-                    g_log_buf[0] = 0;
-                }
-                // TEXT_OUTLN("SamplingThreadTicks");
             }
         }
     }
