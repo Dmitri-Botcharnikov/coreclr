@@ -6637,7 +6637,10 @@ HRESULT SymbolReader::ResolveSequencePoint(__in_z WCHAR* pFilename, ULONG32 line
 
     WideCharToMultiByte(CP_ACP, 0, FileNameW, (int) (_wcslen(FileNameW) + 1), FileName, MAX_LONGPATH, NULL, NULL);
     Status = resolveSequencePointDelegate(FileName, szName, lineNumber, pToken, pIlOffset);
-
+    if (Status == S_OK)
+        Status = E_FAIL; // convert false return into fail
+    else if (Status == S_FALSE)
+        Status = S_OK;
     return Status;
 #endif // FEATURE_PAL
 }
