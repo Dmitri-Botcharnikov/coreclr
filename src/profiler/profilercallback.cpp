@@ -210,7 +210,7 @@ HRESULT ProfilerCallback::CreateObject(
 
 void ProfilerCallback::PerfHandler(char *PC)
 {
-    int count, i = 0;
+    int i;
     ULONG size;
     LPCBYTE addr;
 
@@ -239,7 +239,7 @@ void ProfilerCallback::PerfHandler(char *PC)
                 DWORD32 sp = 0;
                 DWORD32 prev_sp = 0, prev_pc = 0;
                 unw_word_t val;
-                while (true) {
+                for (i = 0; i < 100; i++) {
                     if (unw_get_reg(&cursor, 13, &val) != 0)
                         return;
 
@@ -259,7 +259,6 @@ void ProfilerCallback::PerfHandler(char *PC)
                         prev_sp = sp;
                         prev_pc = (DWORD32)val;
                     }
-                    i++;
                     if (unw_step(&cursor) <= 0)
                         break;
                 }
@@ -267,6 +266,8 @@ void ProfilerCallback::PerfHandler(char *PC)
                     return;
 
                 void **p = (void **)val;
+                if (p < (void **) &cursor) // sanity check
+                    return;
                 while (p > (void **) sp && p < (void **) (sp + 0x40000))
                 {
                      LPCBYTE caller = (LPCBYTE)p[1];
