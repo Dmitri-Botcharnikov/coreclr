@@ -1025,8 +1025,9 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
 
     ModuleID moduleID = 0;
     ModuleInfo *pModuleInfo = NULL;
+    mdToken token;
 
-    hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, NULL );
+    hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, &token );
     if ( SUCCEEDED( hr ) )
     {
         pModuleInfo = m_pModuleTable->Lookup( moduleID );
@@ -1042,6 +1043,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCompilationFinished(
                 size,
                 pModuleInfo ? pModuleInfo->m_internalID : 0,
                 stackTraceId);
+    LogToAny( "T %Id 0x%x\n", pFunctionInfo->m_internalID, token);
 
     UpdateCallStack( NULL, POP );
     ULONG32 pcMap;
@@ -1134,8 +1136,9 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchFinished(
         }
         ModuleID moduleID = 0;
         ModuleInfo *pModuleInfo = NULL;
+        mdToken token;
 
-        hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, NULL );
+        hr = m_pProfilerInfo->GetFunctionInfo( functionId, NULL, &moduleID, &token );
         if ( SUCCEEDED( hr ) )
         {
             pModuleInfo = m_pModuleTable->Lookup( moduleID );
@@ -1150,6 +1153,7 @@ HRESULT STDMETHODCALLTYPE ProfilerCallback::JITCachedFunctionSearchFinished(
                     size,
                     pModuleInfo ? pModuleInfo->m_internalID : 0,
                     stackTraceId);
+        LogToAny( "T %Id 0x%x\n", pFunctionInfo->m_internalID, token);
     }
 
     return S_OK;
