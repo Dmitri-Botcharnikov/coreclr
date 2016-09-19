@@ -88,7 +88,7 @@ private:
     static bool BuildELFHeader(MemBuf& buf);
     static bool BuildSectionNameTable(MemBuf& buf);
     static bool BuildSectionTable(MemBuf& buf);
-    static bool BuildSymbolTableSection(MemBuf& buf, PCODE addr, TADDR codeSize);
+    static bool BuildSymbolTableSection(MemBuf& buf, int nativeOffset, TADDR codeSize);
     static bool BuildStringTableSection(MemBuf& strTab);
     static bool BuildDebugStrings(MemBuf& buf);
     static bool BuildDebugAbbrev(MemBuf& buf);    

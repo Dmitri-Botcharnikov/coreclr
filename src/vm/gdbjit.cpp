@@ -147,6 +147,20 @@ GetDebugInfoFromPDB(MethodDesc* MethodDescPtr, SymbolsInfo** symInfo, unsigned i
     return S_OK;
 }
 
+int FindStartNativeOffset(SymbolsInfo* symInfo, int symInfoLen)
+{
+    int native_offset = 0;
+    for (int i = 0; i < symInfoLen; ++i)
+    {
+        if (symInfo[i].ilOffset == 0)
+        {
+            native_offset = symInfo[i].nativeOffset;
+            break;
+        }
+    }
+    return native_offset;
+}
+
 // GDB JIT interface
 typedef enum
 {
@@ -415,7 +429,7 @@ void NotifyGdb::MethodCompiled(MethodDesc* MethodDescPtr)
         return;
     }
     /* Build .symtab section */
-    if (!BuildSymbolTableSection(sectSymTab, pCode, codeSize))
+    if (!BuildSymbolTableSection(sectSymTab, FindStartNativeOffset(symInfo, symInfoLen), codeSize))
     {
         return;
     }
@@ -932,7 +946,7 @@ bool NotifyGdb::BuildStringTableSection(MemBuf& buf)
 }
 
 /* Build ELF .symtab section */
-bool NotifyGdb::BuildSymbolTableSection(MemBuf& buf, PCODE addr, TADDR codeSize)
+bool NotifyGdb::BuildSymbolTableSection(MemBuf& buf, int nativeOffset, TADDR codeSize)
 {
     buf.MemSize = 2 * sizeof(Elf_Sym);
     buf.MemPtr = new (nothrow) char[buf.MemSize];
@@ -952,10 +966,9 @@ bool NotifyGdb::BuildSymbolTableSection(MemBuf& buf, PCODE addr, TADDR codeSize)
     sym->st_name = 1;
     sym->setBindingAndType(STB_GLOBAL, STT_FUNC);
     sym->st_other = 0;
+    sym->st_value = nativeOffset;
 #ifdef _TARGET_ARM_
-    sym->st_value = 1; // for THUMB code
-#else    
-    sym->st_value = 0;
+    sym->st_value |= 1; // for THUMB code
 #endif    
     sym->st_shndx = 1; // .text section index
     sym->st_size = codeSize;
