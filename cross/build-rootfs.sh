@@ -18,7 +18,7 @@ __UbuntuArch=armhf
 __UbuntuRepo="http://ports.ubuntu.com/"
 __UbuntuPackagesBase="build-essential libunwind8-dev gettext symlinks liblttng-ust-dev libicu-dev"
 if [ -z "$LLVM_ARM_HOME" ]; then
-    __LLDB_Package="lldb-3.6-dev"
+    __LLDB_Package="lldb-3.8-dev"
 fi
 __UbuntuPackages="$__UbuntuPackagesBase $__LLDB_Package"
 __MachineTriple=arm-linux-gnueabihf
