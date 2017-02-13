@@ -175,8 +175,8 @@ ClassInfo::String ClassInfo::TypeArgName(
     {
         // Everything after that as M7, M8, ... or T7, T8, ...
         std::array<WCHAR, 4> argName;
-        _snwprintf(
-            argName.data(), argName.size(), W("%c%u"), argStart, argIndex);
+        _snwprintf_s(
+            argName.data(), argName.size(), _TRUNCATE, W("%c%u"), argStart, argIndex);
         return argName.data();
     }
 }
