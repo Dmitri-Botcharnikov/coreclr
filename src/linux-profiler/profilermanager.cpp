@@ -23,6 +23,10 @@ ProfilerManager::ProfilerManager() noexcept
 
 ProfilerManager::~ProfilerManager()
 {
+    if (g_pProfilerObject != nullptr)
+    {
+        DllDetachShutdown();
+    }
     // We should ensure that the DllDetachShutdown() method was called before
     // singleton destruction.
     assert(g_pProfilerObject == nullptr);
