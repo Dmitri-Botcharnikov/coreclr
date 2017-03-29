@@ -13,9 +13,9 @@ EXTERN_C UINT_PTR __stdcall FunctionIDMapStub(
         FunctionIDMap(funcId, pbHookFunction);
 }
 
-EXTERN_C void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
-EXTERN_C void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
-EXTERN_C void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C __stdcall void EnterNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C __stdcall void LeaveNaked3(FunctionIDOrClientID functionIDOrClientID);
+EXTERN_C __stdcall void TailcallNaked3(FunctionIDOrClientID functionIDOrClientID);
 
 #ifdef _TARGET_ARM_
 EXTERN_C UINT_PTR getPrevPC();
@@ -178,7 +178,7 @@ UINT_PTR ExecutionTrace::GetCurrentManagedIP(
         FunctionID funcId;
         UINT_PTR   pc;
 
-        static HRESULT Callback(
+        static HRESULT __stdcall Callback(
             FunctionID funcId,
             UINT_PTR ip,
             COR_PRF_FRAME_INFO frameInfo,
@@ -231,7 +231,7 @@ void ExecutionTrace::RestoreManagedIP(
         size_t         maxIdxFromTop;
         size_t         maxUndIdxFromTop;
 
-        static HRESULT Callback(
+        static HRESULT __stdcall Callback(
             FunctionID funcId,
             UINT_PTR ip,
             COR_PRF_FRAME_INFO frameInfo,

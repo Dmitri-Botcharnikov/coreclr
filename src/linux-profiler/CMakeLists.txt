@@ -59,6 +59,11 @@ elseif(CLR_CMAKE_TARGET_ARCH_ARM)
     ${ARCH_SOURCES_DIR}/asmhelpers.S
     ${ARCH_SOURCES_DIR}/archhelpers.cpp
   )
+elseif(CLR_CMAKE_TARGET_ARCH_I386)
+  set(PROFILER_SOURCES_ASM
+    ${ARCH_SOURCES_DIR}/asmhelpers.S
+    ${ARCH_SOURCES_DIR}/archhelpers.cpp
+  )
 endif()
 
 add_library_clr(coreprof
